@@ -13,7 +13,7 @@
 %% Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
 %% USA
 %%
-%% $Id:$ 
+%% $Id$ 
 %%
 %% @private (for now)
 %% @author Richard Carlsson <richardc@it.uu.se>
@@ -176,7 +176,7 @@ add_client(Pid, St) ->
 del_client(Pid, St) ->
     case dict:find(Pid, St#state.clients) of
 	{ok, Ref} ->
-	    erlang:demonitor(Ref),
+	    erlang:demonitor(Ref, [flush]),
 	    St#state{clients = dict:erase(Pid, St#state.clients)};
 	error ->
 	    St

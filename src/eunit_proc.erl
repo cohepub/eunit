@@ -13,7 +13,7 @@
 %% Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
 %% USA
 %%
-%% $Id:$ 
+%% $Id$ 
 %%
 %% @author Richard Carlsson <richardc@it.uu.se>
 %% @copyright 2006 Richard Carlsson
@@ -162,15 +162,7 @@ start_task(Type, Fun, St0) ->
 		    status_message(St#procstate.id, {cancel, Msg}, St),
 		    self() ! {done, Reference, Pid}
 	    end,
-	    erlang:demonitor(Monitor),
-	    %% purge any stray DOWN messages from the mailbox (this
-	    %% could happen even if the insulator started properly, due
-	    %% to race conditions, if we don't cancel the monitor before
-	    %% the insulator terminates)
-	    receive
-		{'DOWN', Monitor, process, Pid, _} -> ok
-	    after 0 -> ok
-	    end,
+	    erlang:demonitor(Monitor, [flush]),
 	    Pid
     end.
 
