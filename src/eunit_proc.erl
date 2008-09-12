@@ -219,7 +219,7 @@ insulator_process(Type, Fun, St0) ->
 
 insulator_wait(Child, Parent, Buf, St) ->
     receive
-	{io_request, From, ReplyAs, Req} when pid(From) ->
+	{io_request, From, ReplyAs, Req} when is_pid(From) ->
 	    Buf1 = io_request(From, ReplyAs, Req, hd(Buf)),
 	    insulator_wait(Child, Parent, [Buf1 | tl(Buf)], St);
 	{progress, Child, Id, 'begin', Class} ->
