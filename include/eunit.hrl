@@ -288,8 +288,8 @@
 -else.
 -define(debugMsg(S),
 	(begin
-	     io:fwrite(user, <<"** ~w: ~w: ~s\n">>,
-		       [?MODULE, ?LINE, S]),
+	     io:fwrite(user, <<"~s:~w: ~s\n">>,
+		       [?FILE, ?LINE, S]),
 	     ok
 	 end)).
 -define(debugHere, (?debugMsg("<-"))).
