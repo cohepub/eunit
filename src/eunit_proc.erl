@@ -306,7 +306,11 @@ with_timeout(infinity, F, _St) ->
     Value = F(),
     {T1, _} = statistics(wall_clock),
     {Value, T1 - T0};
-with_timeout(Time, F, St) when is_integer(Time), Time >= 0 ->
+with_timeout(Time, F, St) when is_integer(Time), Time > 16#FFFFffff ->
+    with_timeout(16#FFFFffff, F, St);
+with_timeout(Time, F, St) when is_integer(Time), Time < 0 ->
+    with_timeout(0, F, St);
+with_timeout(Time, F, St) when is_integer(Time) ->
     Ref = set_timeout(Time, St),
     {T0, _} = statistics(wall_clock),
     try F() of
