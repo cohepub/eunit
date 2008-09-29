@@ -774,7 +774,10 @@ Erlang node.</dd>
 <dd>Runs the specified tests under the given timeout. Time is in
 seconds; e.g., 60 means one minute and 0.1 means 1/10th of a second. If
 the timeout is exceeded, the unfinished tests will be forced to
-terminate.</dd>
+terminate. Note that if a timeout is set around a fixture, it includes
+the time for setup and cleanup, and if the timeout is triggered, the
+entire fixture is abruptly terminated (without running the
+cleanup).</dd>
 <dt>`{inorder, Tests}'</dt>
 <dd>Runs the specified tests in strict order. Also see `{inparallel,
 Tests}'. By default, tests are neither marked as `inorder' or
