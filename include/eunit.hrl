@@ -285,6 +285,7 @@
 -define(debugHere, ok).
 -define(debugFmt(S, As), ok).
 -define(debugVal(X), ok).
+-define(debugTime(S,E), (E)).
 -else.
 -define(debugMsg(S),
 	(begin
@@ -295,6 +296,14 @@
 -define(debugHere, (?debugMsg("<-"))).
 -define(debugFmt(S, As), (?debugMsg(io_lib:format((S), (As))))).
 -define(debugVal(X), (?debugFmt(<<"~s = ~P">>, [(??X), (X), 15]))).
+-define(debugTime(S,E),
+	((fun () ->
+		  {__T0, _} = statistics(wall_clock),
+		  __V = (E),
+		  {__T1, _} = statistics(wall_clock),
+		  ?debugFmt(<<"~s: ~.3f s">>, [(S), (__T1-__T0)/1000]),
+		  __V
+	  end)())).
 -endif.
 
 -endif. % EUNIT_HRL
