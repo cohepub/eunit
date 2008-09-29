@@ -33,6 +33,8 @@
 
 -import(lists, [foldr/3]).
 
+-define(TICKS_PER_SECOND, 1000).
+
 %% @type tests() =
 %%            SimpleTest
 %%          | [tests()]
@@ -248,7 +250,7 @@ parse({inparallel, T}) ->
 parse({inparallel, N, T}) when is_integer(N), N >= 0 ->
     group(#group{tests = T, order = {inparallel, N}});
 parse({timeout, N, T}) when is_number(N), N >= 0 ->
-    group(#group{tests = T, timeout = round(N * 1000)});
+    group(#group{tests = T, timeout = round(N * ?TICKS_PER_SECOND)});
 parse({spawn, T}) ->
     group(#group{tests = T, spawn = local});
 parse({spawn, N, T}) when is_atom(N) ->
@@ -478,6 +480,15 @@ group(#group{tests = T0, desc = Desc, order = Order, context = Context,
 	    %% information directly on the test; drop the order
 	    T1#test{desc = join_properties(Desc, Desc1),
 		    timeout = join_properties(Timeout, Timeout1)};
+
+	#test{timeout = undefined}
+	when T2 =:= none, Timeout =/= undefined, Context =:= undefined ->
+	    %% a single test without timeout, within a non-joinable
+	    %% group with a timeout and no fixture: push the timeout to
+	    %% the test
+	    G#group{tests = {timeout, (Timeout div ?TICKS_PER_SECOND), T0},
+		    timeout = undefined};
+
 	#group{desc = Desc1, order = Order1, context = Context1,
 	       spawn = Spawn1, timeout = Timeout1}
 	when T2 =:= none,
@@ -487,13 +498,20 @@ group(#group{tests = T0, desc = Desc, order = Order, context = Context,
 	     ((Spawn =:= undefined) or (Spawn1 =:= undefined)),
 	     ((Timeout =:= undefined) or (Timeout1 =:= undefined)) ->
 	    %% two nested groups with non-conflicting properties
-	    T1#group{desc = join_properties(Desc, Desc1),
-		     order = join_properties(Order, Order1),
-		     context = join_properties(Context, Context1),
-		     spawn = join_properties(Spawn, Spawn1),
-		     timeout = join_properties(Timeout, Timeout1)};
+	    group(T1#group{desc = join_properties(Desc, Desc1),
+			   order = join_properties(Order, Order1),
+			   context = join_properties(Context, Context1),
+			   spawn = join_properties(Spawn, Spawn1),
+			   timeout = join_properties(Timeout, Timeout1)});
+
+	#group{order = Order1, timeout = Timeout1}
+	when T2 =:= none ->
+	    %% two nested groups that cannot be joined: try to push the
+	    %% timeout and ordering properties to the inner group
+	    push_order(Order, Order1, push_timeout(Timeout, Timeout1, G));
+
 	_ ->
-	    %% leave as it is and discard the lookahead
+	    %% leave the group as it is and discard the lookahead
 	    G
     end.
 
@@ -506,6 +524,21 @@ lookahead(T) ->
 join_properties(undefined, X) -> X;    
 join_properties(X, undefined) -> X.
 
+push_timeout(Timeout, undefined, G=#group{context=undefined})
+  when Timeout =/= undefined ->
+    %% A timeout on a context (fixture) includes the setup/cleanup time
+    %% and must not be propagated into the body
+    G#group{tests = {timeout, (Timeout div ?TICKS_PER_SECOND), G#group.tests},
+	    timeout = undefined};
+push_timeout(_, _, G) ->
+    G.
+
+push_order(inorder, undefined, G) ->
+    G#group{tests = {inorder, G#group.tests}, order = undefined};
+push_order({inparallel, N}, undefined, G) ->
+    G#group{tests = {inparallel, N, G#group.tests}, order = undefined};
+push_order(_, _, G) ->
+    G.
 
 %% ---------------------------------------------------------------------
 %% Extracting test funs from a module
