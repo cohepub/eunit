@@ -294,7 +294,7 @@
 	 end)).
 -define(debugHere, (?debugMsg("<-"))).
 -define(debugFmt(S, As), (?debugMsg(io_lib:format((S), (As))))).
--define(debugVal(X), (?debugFmt(<<"~s = ~P">>, [(??X), (X), 10]))).
+-define(debugVal(X), (?debugFmt(<<"~s = ~P">>, [(??X), (X), 15]))).
 -endif.
 
 -endif. % EUNIT_HRL
