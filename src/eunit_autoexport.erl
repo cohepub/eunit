@@ -13,7 +13,7 @@
 %% Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
 %% USA
 %%
-%% $Id:$ 
+%% $Id$ 
 %%
 %% @author Richard Carlsson <richardc@it.uu.se>
 %% @copyright 2006 Richard Carlsson
@@ -40,30 +40,30 @@ parse_transform(Forms, Options) ->
 		form(Form, Set, TestSuffix, GeneratorSuffix,
 		     ExportSuffix)
 	end,
-    Tests = sets:to_list(lists:foldl(F, sets:new(), Forms)),
-    rewrite(Forms, Tests).
+    Exports = sets:to_list(lists:foldl(F, sets:new(), Forms)),
+    rewrite(Forms, Exports).
 
-form({function, _L, Name, 0, _Cs}, Tests, TestSuffix, GeneratorSuffix,
+form({function, _L, Name, 0, _Cs}, S, TestSuffix, GeneratorSuffix,
      ExportSuffix) ->
     N = atom_to_list(Name),
     case lists:suffix(TestSuffix, N) of
 	true ->
-	    sets:add_element({Name, 0}, Tests);
+	    sets:add_element({Name, 0}, S);
 	false ->
 	    case lists:suffix(GeneratorSuffix, N) of
 		true ->
-		    sets:add_element({Name, 0}, Tests);
+		    sets:add_element({Name, 0}, S);
 		false ->
 		    case lists:suffix(ExportSuffix, N) of
 			true ->
-			    sets:add_element({Name, 0}, Tests);
+			    sets:add_element({Name, 0}, S);
 			false ->
-			    Tests
+			    S
 		    end
 	    end
     end;
-form(_, Tests, _, _, _) ->
-    Tests.
+form(_, S, _, _, _) ->
+    S.
 
 rewrite([{attribute,_,module,{Name,_Ps}}=M | Fs], Exports) ->
     module_decl(Name, M, Fs, Exports);
