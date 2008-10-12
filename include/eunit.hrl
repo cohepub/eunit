@@ -284,7 +284,7 @@
 -define(debugMsg(S), ok).
 -define(debugHere, ok).
 -define(debugFmt(S, As), ok).
--define(debugVal(X), ok).
+-define(debugVal(E), (E)).
 -define(debugTime(S,E), (E)).
 -else.
 -define(debugMsg(S),
@@ -295,7 +295,11 @@
 	 end)).
 -define(debugHere, (?debugMsg("<-"))).
 -define(debugFmt(S, As), (?debugMsg(io_lib:format((S), (As))))).
--define(debugVal(X), (?debugFmt(<<"~s = ~P">>, [(??X), (X), 15]))).
+-define(debugVal(E),
+	((fun (__V) ->
+		  ?debugFmt(<<"~s = ~P">>, [(??E), __V, 15]),
+		  __V
+	  end)(E))).
 -define(debugTime(S,E),
 	((fun () ->
 		  {__T0, _} = statistics(wall_clock),
