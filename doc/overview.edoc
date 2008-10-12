@@ -259,8 +259,8 @@ functions (this also includes setup and cleanup functions, but not
 generator functions), so that it can be included in the test report if
 errors occur. To bypass EUnit and print text directly to the console
 while testing, you can write to the 'user' output stream, as in
-`io:format(user, "~w", [Term])', or use the built-in debugging function
-`erlang:display(Term)'.
+`io:format(user, "~w", [Term])'. The recommended way of doing this is to
+use the EUnit {@section Debugging Macros}, which make it much simpler.
 
 === Writing test generating functions ===
 
@@ -401,6 +401,7 @@ your code is compiled with testing enabled or disabled.
 <li>{@section Utility macros}</li>
 <li>{@section Assert macros}</li>
 <li>{@section Macros for running external commands}</li>
+<li>{@section Debugging Macros}</li>
 </ul>
 
 === Basic macros ===
@@ -610,6 +611,44 @@ A Unix-specific example:
     fun (FileName) -> ?cmd("rm " ++ FileName) end,
     ...}'''
 </dd>
+</dl>
+
+=== Debugging Macros ===
+
+To help with debugging, EUnit defines several useful macros for printing
+messages directly to the console (rather than to the standard output).
+Furthermore, these macros all use the same basic format, which includes
+the file and line number where they occur, making it possible in some
+development environments (e.g., when running Erlang in an Emacs buffer)
+to simply click on the message and jump directly to the corresponding
+line in the code.
+
+If the macro `NODEBUG' is defined before the EUnit header file is
+included, these macros have no effect.
+
+<dl>
+<dt>`debugHere'</dt>
+<dd>Just prints a marker showing the current file and line number. Note
+that this is an argument-less macro. The result is always `ok'.</dd>
+<dt>`debugMsg(Text)'</dt>
+<dd>Outputs the message `Text' (which can be a plain string, an IO-list,
+or just an atom). The result is always `ok'.</dd>
+<dt>`debugFmt(FmtString, Args)'</dt>
+<dd>This formats the text like `io:format(FmtString, Args)' and outputs
+it like `debugMsg'. The result is always `ok'.</dd>
+<dt>`debugVal(Expr)'</dt>
+<dd>Prints both the source code for `Expr' and its current value. E.g.,
+`?debugVal(f(X))' might be displayed as "`f(X) = 42'". (Large terms are
+shown truncated.) The result is always the value of `Expr', so this
+macro can be wrapped around any expression to display its value when
+the code is compiled with debugging enabled.</dd>
+<dt>`debugTime(Text,Expr)'</dt>
+<dd>Prints `Text' and the wall clock time for evaluation of `Expr'. The
+result is always the value of `Expr', so this macro can be wrapped
+around any expression to show its run time when the code is compiled
+with debugging enabled. For example, `List1 = ?debugTime("sorting",
+lists:sort(List))' might show as "`sorting: 0.015 s'".</dd>
+
 </dl>
 
 
