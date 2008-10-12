@@ -250,7 +250,7 @@ then calling `m:test()' will run EUnit on all the tests defined in the
 module. You do not need to write `-export' declarations for the test
 functions. This is all done by magic.
 
-=== EUnit captures standard output ===
+==== EUnit captures standard output ====
 
 If your test code writes to the standard output, you may be surprised to
 see that the text does not appear on the console when the tests are
