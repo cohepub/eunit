@@ -250,6 +250,18 @@ then calling `m:test()' will run EUnit on all the tests defined in the
 module. You do not need to write `-export' declarations for the test
 functions. This is all done by magic.
 
+=== EUnit captures standard output ===
+
+If your test code writes to the standard output, you may be surprised to
+see that the text does not appear on the console when the tests are
+running. This is because EUnit captures all standard output from test
+functions (this also includes setup and cleanup functions, but not
+generator functions), so that it can be included in the test report if
+errors occur. To bypass EUnit and print text directly to the console
+while testing, you can write to the 'user' output stream, as in
+`io:format(user, "~w", [Term])', or use the built-in debugging function
+`erlang:display(Term)'.
+
 === Writing test generating functions ===
 
 A drawback of simple test functions is that you must write a separate
