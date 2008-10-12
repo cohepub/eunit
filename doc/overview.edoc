@@ -347,7 +347,7 @@ you can specify test sets in EUnit.
 Testing can be turned off by defining the `NOTEST' macro when compiling,
 for example as an option to `erlc', as in:
 ```erlc -DNOTEST my_module.erl'''
-or by adding a macro definition to the code, <em>before any EUnit header
+or by adding a macro definition to the code, <em>before the EUnit header
 file is included</em>:
 ```-define(NOTEST, 1).'''
 (the value is not important, but should typically be 1 or `true').
@@ -386,7 +386,7 @@ EUnit macros within `-ifdef(TEST)' or `-ifdef(EUNIT)' sections.
 == EUnit macros ==
 
 Although all the functionality of EUnit is avaliable even without the
-use of preprocessor macros, the EUnit header files define a number of
+use of preprocessor macros, the EUnit header file defines a number of
 such macros in order to make it as easy as possible to write unit tests
 as compactly as possible and without getting too many details in the
 way.
@@ -441,7 +441,7 @@ that uses more generic testing conventions, using the `TEST' macro may
 be preferred.
 
 The `TEST' macro can also be used to override the `NOTEST' macro. If
-`TEST' is defined <em>before</em> any of the EUnit header files are
+`TEST' is defined <em>before</em> the EUnit header file is
 included (even if `NOTEST' is also defined), then the code will be
 compiled with EUnit enabled.
 </dd>
@@ -452,7 +452,7 @@ at compile time. (Compare the `TEST' macro.)
 
 This macro can also be used for conditional compilation, but is more
 typically used to disable testing: If `NOTEST' is defined
-<em>before</em> any of the EUnit header files are included, and `TEST'
+<em>before</em> the EUnit header file is included, and `TEST'
 is <em>not</em> defined, then the code will be compiled with EUnit
 disabled. See also {@section Disabling testing}.
 </dd>
