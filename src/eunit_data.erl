@@ -603,7 +603,7 @@ get_file_tests(F) ->
 	true ->
 	    %% look relative to current dir first
 	    case file:read_file_info(F) of
-		{ok, #file_info{type=file}} ->
+		{ok, #file_info{type=regular}} ->
 		    objfile_test(F);
 		_ ->
 		    %% (where_is_file/1 does not take a path argument)
