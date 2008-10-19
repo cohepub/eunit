@@ -13,7 +13,7 @@
 %% Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
 %% USA
 %%
-%% $Id:$
+%% $Id$
 %%
 %% @author Richard Carlsson <richardc@it.uu.se>
 %% @copyright 2006 Richard Carlsson
@@ -111,7 +111,7 @@ ensure_started(Name, N) when N > 0 ->
 		{Pid, ok} ->
 		    Pid;
 		{Pid, error} ->
-		    receive after 200 -> ensure_started(N - 1) end
+		    receive after 200 -> ensure_started(Name, N - 1) end
 	    end;
 	Pid ->
 	    Pid
