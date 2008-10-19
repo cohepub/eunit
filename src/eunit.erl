@@ -28,61 +28,82 @@
 -include("eunit.hrl").
 -include("eunit_internal.hrl").
 
+%% Official exports
+-export([start/0, stop/0, test/1, test/2]).
 
--export([start/0, start/1, stop/0, stop/1, test/1, test/2, test/3,
-	 list/1, submit/1, submit/2, submit/3, watch/1, watch/2,
-	 watch/3, watch_path/1, watch_path/2, watch_path/3,
-	 watch_regexp/1, watch_regexp/2, watch_regexp/3, watch_app/1,
-	 watch_app/2, watch_app/3]).
-
+%% Experimental; may be removed or relocated
+-export([start/1, stop/1, test/3, list/1, submit/1, submit/2, submit/3,
+	 watch/1, watch/2, watch/3, watch_path/1, watch_path/2,
+	 watch_path/3, watch_regexp/1, watch_regexp/2, watch_regexp/3,
+	 watch_app/1, watch_app/2, watch_app/3]).
 
 %% EUnit entry points
 
+%% @doc Starts the EUnit server. Normally, you don't need to call this
+%% function; it is started automatically.
 start() ->
     start(?SERVER).
 
+%% @private
+%% @doc See {@link start/0}.
 start(Server) ->
     eunit_server:start(Server).
 
+%% @doc Stops the EUnit server. Normally, you don't need to call this
+%% function.
 stop() ->
     stop(?SERVER).
 
+%% @private
+%% @doc See {@link stop/0}.
 stop(Server) ->
     eunit_server:stop(Server).
 
+%% @private
 watch(Target) ->
     watch(Target, []).
 
+%% @private
 watch(Target, Options) ->
     watch(?SERVER, Target, Options).
 
+%% @private
 watch(Server, Target, Options) ->
     eunit_server:watch(Server, Target, Options).
 
+%% @private
 watch_path(Target) ->
     watch_path(Target, []).
 
+%% @private
 watch_path(Target, Options) ->
     watch_path(?SERVER, Target, Options).
 
+%% @private
 watch_path(Server, Target, Options) ->
     eunit_server:watch_path(Server, Target, Options).
 
+%% @private
 watch_regexp(Target) ->
     watch_regexp(Target, []).
 
+%% @private
 watch_regexp(Target, Options) ->
     watch_regexp(?SERVER, Target, Options).
 
+%% @private
 watch_regexp(Server, Target, Options) ->
     eunit_server:watch_regexp(Server, Target, Options).
 
+%% @private
 watch_app(Name) ->
     watch_app(Name, []).
 
+%% @private
 watch_app(Name, Options) ->
     watch_app(?SERVER, Name, Options).
 
+%% @private
 watch_app(Server, Name, Options) ->
     case code:lib_dir(Name) of
 	Path when is_list(Path) ->
@@ -91,26 +112,45 @@ watch_app(Server, Name, Options) ->
 	    error
     end.
 
+%% @private
 list(T) ->
     try eunit_data:list(T)
     catch
 	{error, R} -> {error, R}
     end.
 
-test(T) ->
-    test(T, []).
+%% @equiv test(Tests, [])
+test(Tests) ->
+    test(Tests, []).
 
-test(T, Options) ->
-    test(?SERVER, T, Options).
+%% @spec test(Tests::term(), Options::[term()]) -> ok | {error, term()}
+%% @doc Runs a set of tests. The format of `Tests' is described in the
+%% section <a
+%% href="overview-summary.html#EUnit_test_representation">EUnit test
+%% representation</a> of the overview.
+%% 
+%% Example: ```eunit:test(fred)''' runs all tests in the module `fred'
+%% and also any tests in the module `fred_tests', if that module exists.
+%%
+%% Options:
+%% <dl>
+%% <dt>`verbose'</dt>
+%% <dd>Displays more details about the running tests.</dd>
+%% </dl>
+%% @see test/1
+test(Tests, Options) ->
+    test(?SERVER, Tests, Options).
 
-test(Server, T, Options) ->
+%% @private
+%% @doc See {@link test/2}.
+test(Server, Tests, Options) ->
     %% TODO: try to eliminate call to list/1
-    try eunit_data:list(T) of
+    try eunit_data:list(Tests) of
 	List ->
 	    Listeners = [eunit_tty:start(List, Options)
 			 | listeners(Options)],
 	    Serial = eunit_serial:start(Listeners),
-	    case eunit_server:start_test(Server, Serial, T, Options) of
+	    case eunit_server:start_test(Server, Serial, Tests, Options) of
 		{ok, Reference} -> test_run(Reference, Listeners);
 		{error, R} -> {error, R}
 	    end
@@ -144,12 +184,15 @@ cast([], Msg) ->
 %% TODO: maybe some functions could check for a globally registered server?
 %% TODO: some synchronous but completely quiet interface function
 
+%% @private
 submit(T) ->
     submit(T, []).
 
+%% @private
 submit(T, Options) ->
     submit(?SERVER, T, Options).
 
+%% @private
 submit(Server, T, Options) ->
     Dummy = spawn(fun devnull/0),
     eunit_server:start_test(Server, Dummy, T, Options).

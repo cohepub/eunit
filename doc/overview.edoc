@@ -32,8 +32,8 @@ typically less verbose than its relatives.
 Although EUnit uses many preprocessor macros, they have been designed to
 be as nonintrusive as possible, and should not cause conflicts with
 existing code. Adding EUnit tests to a module should thus not normally
-require modifying code. Furthermore, tests that only exercise the
-exported functions of a module can always be placed in a completely
+require changing existing code. Furthermore, tests that only exercise
+the exported functions of a module can always be placed in a completely
 separate module, avoiding any conflicts entirely.
 
 == Unit Testing ==
@@ -250,6 +250,22 @@ then calling `m:test()' will run EUnit on all the tests defined in the
 module. You do not need to write `-export' declarations for the test
 functions. This is all done by magic.
 
+You can also use the function {@link eunit:test/1} to run arbitrary
+tests, for example to try out some more advanced test descriptors (see
+{@section EUnit test representation}). For example, running
+``eunit:test(m)'' does the same thing as the auto-generated function
+``m:test()'', while ``eunit:test({inparallel, m})'' runs the same test
+cases but executes them all in parallel.
+
+==== Putting tests in separate modules ====
+
+If you want to separate your test code from your normal code (at least
+for testing the exported functions), you can simply write the test
+functions in a module named `m_tests' (note: not `m_test'), if your
+module is named `m'. Then, whenever you ask EUnit to test the module
+`m', it will also look for the module `m_tests' and run those tests as
+well. See `ModuleName' in the section {@section Primitives} for details.
+
 ==== EUnit captures standard output ====
 
 If your test code writes to the standard output, you may be surprised to
@@ -258,7 +274,7 @@ running. This is because EUnit captures all standard output from test
 functions (this also includes setup and cleanup functions, but not
 generator functions), so that it can be included in the test report if
 errors occur. To bypass EUnit and print text directly to the console
-while testing, you can write to the 'user' output stream, as in
+while testing, you can write to the `user' output stream, as in
 `io:format(user, "~w", [Term])'. The recommended way of doing this is to
 use the EUnit {@section Debugging Macros}, which make it much simpler.
 
@@ -706,6 +722,8 @@ Thus, the main representation of test sets is <em>deep lists</em>, and
 a simple test object can be viewed as a test set containing only a
 single test; there is no difference between `T' and `[T]'.
 
+A module can also be used to represent a test set; see `ModuleName'
+under {@section Primitives} below.
 
 === Titles ===
 
@@ -721,16 +739,6 @@ instead of adding an extra tuple wrapper as in `{"The Title", {...}}'.
 The following are primitives, which do not contain other test sets as
 arguments:
 <dl>
-<dt>`{generator, GenFun::(() -> Tests)}'
-</dt>
-<dd>The generator function `GenFun' is called to produce a test
-set.
-</dd>
-<dt>`{generator, ModuleName::atom(), FunctionName::atom()}'
-</dt>
-<dd>The function `ModuleName:FunctionName()' is called to produce a test
-set.
-</dd>
 <dt>`ModuleName::atom()'
 </dt>
 <dd>A single atom represents a module name, and is equivalent to
@@ -791,6 +799,16 @@ can be used directly, without a path, e.g., `"mnesia.app"'.
 </dt>
 <dd>This tests all object files in the specified directory, as if they
 had been individually specified using `{file, FileName}'.
+</dd>
+<dt>`{generator, GenFun::(() -> Tests)}'
+</dt>
+<dd>The generator function `GenFun' is called to produce a test
+set.
+</dd>
+<dt>`{generator, ModuleName::atom(), FunctionName::atom()}'
+</dt>
+<dd>The function `ModuleName:FunctionName()' is called to produce a test
+set.
 </dd>
 <dt>`{with, X::any(), [AbstractTestFun::((any()) -> any())]}'
 </dt>
