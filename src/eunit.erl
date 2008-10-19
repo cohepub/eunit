@@ -21,7 +21,7 @@
 %% @author Richard Carlsson <richardc@it.uu.se>
 %%   [http://user.it.uu.se/~richardc/]
 %% @version {@version}, {@date} {@time}
-%% @doc This module is the normal EUnit user interface.
+%% @doc This module is the main EUnit user interface.
 
 -module(eunit).
 
@@ -34,8 +34,6 @@
 	 watch/3, watch_path/1, watch_path/2, watch_path/3,
 	 watch_regexp/1, watch_regexp/2, watch_regexp/3, watch_app/1,
 	 watch_app/2, watch_app/3]).
-
--export([testp/1]). %% for development testing, not official
 
 
 %% EUnit entry points
@@ -100,10 +98,7 @@ list(T) ->
     end.
 
 test(T) ->
-    test(T, [{order, inorder}]).
-
-testp(T) ->
-    test(T, [{order, inparallel}]).
+    test(T, []).
 
 test(T, Options) ->
     test(?SERVER, T, Options).
