@@ -178,7 +178,7 @@ cast([P | Ps], Msg) ->
     P ! Msg,
     cast(Ps, Msg);
 cast([], Msg) ->
-    Msg.
+    ok.
 
 %% TODO: functions that run tests on a given node, not a given server
 %% TODO: maybe some functions could check for a globally registered server?
