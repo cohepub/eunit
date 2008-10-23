@@ -177,7 +177,7 @@ test_run(Reference, Listeners) ->
 cast([P | Ps], Msg) ->
     P ! Msg,
     cast(Ps, Msg);
-cast([], Msg) ->
+cast([], _Msg) ->
     ok.
 
 %% TODO: functions that run tests on a given node, not a given server
