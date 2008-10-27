@@ -13,7 +13,7 @@
 %% Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
 %% USA
 %%
-%% $Id:$ 
+%% $Id$ 
 %%
 %% @author Richard Carlsson <richardc@it.uu.se>
 %% @copyright 2006 Richard Carlsson
@@ -311,8 +311,7 @@ multi_setup([{Tag, S, C} | Es], CleanupPrev) ->
 			  _ -> CleanupPrev(Rs)
 		      catch
 			  Class:Term ->
-			      throw({Tag, {Class, Term,
-					   eunit_test:get_stacktrace()}})
+			      throw({Tag, {Class, Term, get_stacktrace()}})
 		      end
 	      end,
     {SetupRest, CleanupAll} = multi_setup(Es, Cleanup),
@@ -323,8 +322,7 @@ multi_setup([{Tag, S, C} | Es], CleanupPrev) ->
 	     catch
 		 Class:Term ->
 		     CleanupPrev(Rs),
-		     throw({Tag, {Class, Term,
-				  eunit_test:get_stacktrace()}})
+		     throw({Tag, {Class, Term, get_stacktrace()}})
 	     end
      end,
      CleanupAll};
