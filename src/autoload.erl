@@ -13,7 +13,7 @@
 %% Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
 %% USA
 %%
-%% $Id:$ 
+%% $Id$ 
 %%
 %% @private (for now)
 %% @author Richard Carlsson <richardc@it.uu.se>
@@ -209,7 +209,7 @@ monitor_module(M, Opts, St) ->
 monitor_objs(Path, Files, St) ->
     Opts = get_dir_opts(Path, St),
     ObjExt = file:objfile_extension(),
-    Objs = [F || {added, F} <- Files, filename:extension(F) == ObjExt],
+    Objs = [F || {added, F} <- Files, filename:extension(F) =:= ObjExt],
     lists:foldl(
       fun (F, St) ->
 	      F1 = filename:absname(filename:join(Path, F)),
@@ -275,9 +275,9 @@ changed_file(File, Time, St) ->
 
 check_reload(M, File, Time, R) ->
     %%erlang:display({autoload_checking, M, File, Time, R}),
-    case ((R#module.file == File)
+    case ((R#module.file =:= File)
 	  andalso is_loaded(M)
-	  andalso (code:which(M) == File)
+	  andalso (code:which(M) =:= File)
 	  andalso is_newer(Time, R#module.time))
 	of
 	true ->
@@ -334,7 +334,7 @@ ensure_loaded(M, File, Opts) ->
     case proplists:get_bool(load, Opts) of
 	true when is_atom(M) ->
 	    ensure_loaded_1(M, File);  %% known module name
-	true when M == [] ->
+	true when M =:= [] ->
 	    case obj_module(File) of
 		{module, Module} ->
 		    ensure_loaded_1(Module, File);
@@ -349,7 +349,7 @@ ensure_loaded_1(M, File) ->
     case code:ensure_loaded(M) of
 	{module, _} ->
 	    ok;
-	{error, _} when File == [] ->
+	{error, _} when File =:= [] ->
 	    ok;  %% ignore error
 	{error, _} ->
 	    %% try loading directly from the file

@@ -234,7 +234,7 @@ causes a crash if the result is not what it should be.)
 
 If you want to use Boolean operators for your tests, the `assert'
 macro comes in handy (see {@section EUnit macros} for details):
-```length_test() -> ?assert(length([1,2,3]) == 3).'''
+```length_test() -> ?assert(length([1,2,3]) =:= 3).'''
 The `?assert(Expression)' macro will evaluate `Expression', and if that
 does not evaluate to `true', it will throw an exception; otherwise it
 just returns `ok'. In the above example, the test will thus fail if the
@@ -295,10 +295,10 @@ of tests</em> to be executed by EUnit.
 The most basic representation of a test is a single fun-expression that
 takes no arguments. For example, the following test generator:
 ```basic_test_() ->
-       fun () -> ?assert(1 + 1 == 2) end.'''
+       fun () -> ?assert(1 + 1 =:= 2) end.'''
 will have the same effect as the following simple test:
 ```simple_test() ->
-       ?assert(1 + 1 == 2).'''
+       ?assert(1 + 1 =:= 2).'''
 (in fact, EUnit will handle all simple tests just like it handles
 fun-expressions: it will put them in a list, and run them one by one).
 
@@ -310,7 +310,7 @@ occurred (and reduce the number of characters you have to type), you can
 use the `_test' macro (note the initial underscore character), like
 this:
 ```basic_test_() ->
-       ?_test(?assert(1 + 1 == 2)).'''
+       ?_test(?assert(1 + 1 =:= 2)).'''
 The `_test' macro takes any expression (the "body") as argument, and
 places it within a fun-expression (along with some extra information).
 The body can be any kind of test expression, just like the body of a
@@ -323,7 +323,7 @@ family of `assert' macros, have a corresponding form with an initial
 underscore character, which automatically adds a `?_test(...)' wrapper.
 The above example can then simply be written:
 ```basic_test_() ->
-       ?_assert(1 + 1 == 2).'''
+       ?_assert(1 + 1 =:= 2).'''
 which has exactly the same meaning (note the `_assert' instead of
 `assert'). You can think of the initial underscore as signalling
 <em>test object</em>.
@@ -341,14 +341,14 @@ small Erlang module shows how EUnit can be used in practice.
    fib(N) when N > 1 -> fib(N-1) + fib(N-2).
 
    fib_test_() ->
-       [?_assert(fib(0) == 1),
-	?_assert(fib(1) == 1),
-	?_assert(fib(2) == 2),
-	?_assert(fib(3) == 3),
-	?_assert(fib(4) == 5),
-	?_assert(fib(5) == 8),
+       [?_assert(fib(0) =:= 1),
+	?_assert(fib(1) =:= 1),
+	?_assert(fib(2) =:= 2),
+	?_assert(fib(3) =:= 3),
+	?_assert(fib(4) =:= 5),
+	?_assert(fib(5) =:= 8),
 	?_assertException(error, function_clause, fib(-1)),
-	?_assert(fib(31) == 2178309)
+	?_assert(fib(31) =:= 2178309)
        ].'''
 
 (Author's note: When I first wrote this example, I happened to write a
@@ -515,7 +515,7 @@ the macro will not generate any code except the atom `ok', and
 `BoolExpr' will not be evaluated.
 
 Typical usage:
-```?assert(f(X, Y) == [])'''
+```?assert(f(X, Y) =:= [])'''
 
 The `assert' macro can be used anywhere in a program, not just in unit
 tests, to check pre/postconditions and invariants. For example:

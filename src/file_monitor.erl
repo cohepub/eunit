@@ -254,7 +254,7 @@ delete_monitor_2(Path, Ref, Dict) ->
 purge_monitor_ref(Ref, Entry) ->
     Entry#entry{monitors =
 		sets:filter(fun (#monitor{reference = R})
-				when R == Ref -> false;
+				when R =:= Ref -> false;
 				(_) -> true
 			    end,
 			    Entry#entry.monitors)}.
@@ -271,7 +271,7 @@ purge_pid(Pid, St) ->
 		    end,
 		    St#state.dirs),
     Refs = dict:filter(fun (_Ref, {P, _})
-			   when P == Pid -> false;
+			   when P =:= Pid -> false;
 			   (_, _) -> true
 		       end,
 		       St#state.refs),
@@ -282,7 +282,7 @@ purge_pid(Pid, St) ->
 purge_monitor_pid(Pid, Entry) ->
     Entry#entry{monitors =
 		sets:filter(fun (#monitor{pid = P})
-				when P == Pid -> false;
+				when P =:= Pid -> false;
 				(_) -> true
 			    end,
 			    Entry#entry.monitors)}.

@@ -13,7 +13,7 @@
 %% Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
 %% USA
 %%
-%% $Id:$ 
+%% $Id$ 
 %%
 %% @author Richard Carlsson <richardc@it.uu.se>
 %% @copyright 2006 Richard Carlsson
@@ -53,8 +53,9 @@ init(Id, List, St0) ->
 	    St = group_begin(Id, "", List, St0),
 	    receive
 		{stop, Reference, ReplyTo} ->
-		    Result = if St#state.fail == 0, St#state.abort == 0,
-				St#state.skip == 0 ->
+		    Result = if St#state.fail =:= 0,
+				St#state.abort =:= 0,
+				St#state.skip =:= 0 ->
 				     ok;
 				true ->
 				     error
@@ -66,13 +67,13 @@ init(Id, List, St0) ->
     end.
 
 report(ok, St) ->
-    if St#state.succeed == 0 ->
+    if St#state.succeed =:= 0 ->
 	    io:fwrite("  There were no tests to run.\n");
        true ->
 	    if St#state.verbose -> print_bar();
 	       true -> ok
 	    end,
-	    if St#state.succeed == 1 ->
+	    if St#state.succeed =:= 1 ->
 		    io:fwrite("  Test successful.\n");
 	       true ->
 		    io:fwrite("  All ~w tests successful.\n",
@@ -132,7 +133,7 @@ test_begin(Id, Desc, {Module, Name, Line}, St) ->
 test_end(Id, Text, St) ->
     case wait(Id, St) of
 	{{progress, 'end', {Result, Time, _Output}}, St1} ->
-	    if Result == ok ->
+	    if Result =:= ok ->
 		    if St#state.verbose -> print_test_end(Time);
 		       true -> ok
 		    end,
@@ -216,10 +217,10 @@ print_group_end(I, Time) ->
     end.
 
 format_test_begin(Module, Name, Line, Desc) ->
-    L = if Line == 0 -> "";
+    L = if Line =:= 0 -> "";
 	   true -> io_lib:fwrite("~w:", [Line])
 	end,
-    D = if Desc == "" -> "";
+    D = if Desc =:= "" -> "";
 	   true -> io_lib:fwrite(" (~s)", [Desc])
 	end,
     io_lib:fwrite("~s:~s~s~s...", [Module, L, Name, D]).

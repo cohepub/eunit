@@ -103,10 +103,10 @@ format_stacktrace([{M,F,A}|Fs], Pre, Pre1) when is_integer(A) ->
 format_stacktrace([{M,F,As}|Fs], Pre, Pre1) when is_list(As) ->
     A = length(As),
     C = case is_op(M,F,A) of
-	    true when A == 1 ->
+	    true when A =:= 1 ->
 		[A1] = As,
 		io_lib:fwrite("~s ~s", [F,format_arg(A1)]);
-	    true when A == 2 ->
+	    true when A =:= 2 ->
 		[A1, A2] = As,
 		io_lib:fwrite("~s ~s ~s",
 			      [format_arg(A1),F,format_arg(A2)]);
@@ -470,10 +470,10 @@ command(Cmd, Dir) ->
     command(Cmd, Dir, []).
 
 command(Cmd, Dir, Env) ->
-    CD = if Dir == "" -> [];
+    CD = if Dir =:= "" -> [];
 	    true -> [{cd, Dir}]
 	 end,
-    SetEnv = if Env == [] -> []; 
+    SetEnv = if Env =:= [] -> []; 
 		true -> [{env, Env}]
 	     end,
     Opt = CD ++ SetEnv ++ [stream, exit_status, use_stdio,
@@ -587,7 +587,7 @@ trie_store([_ | _], []) ->
 trie_store([E | Es], T) ->
     case gb_trees:lookup(E, T) of
 	none ->
-	    if Es == [] ->
+	    if Es =:= [] ->
 		    gb_trees:insert(E, [], T);
 	       true ->
 		    gb_trees:insert(E, trie_store(Es, gb_trees:empty()),
@@ -608,7 +608,7 @@ trie_match([E | Es], T) ->
 	none ->
 	    no;
 	{value, []} ->
-	    if Es == [] -> exact;
+	    if Es =:= [] -> exact;
 	       true -> prefix
 	    end;
 	{value, T1} ->
@@ -623,16 +623,16 @@ trie_match([], _T) ->
 
 trie_test_() ->
     [{"basic representation",
-      [?_assert(trie_new() == gb_trees:empty()),
+      [?_assert(trie_new() =:= gb_trees:empty()),
        ?_assert(trie_store([1], trie_new())
-		== gb_trees:insert(1, [], gb_trees:empty())),
+		=:= gb_trees:insert(1, [], gb_trees:empty())),
        ?_assert(trie_store([1,2], trie_new())
-		== gb_trees:insert(1,
-				   gb_trees:insert(2, [],
-						   gb_trees:empty()),
-				   gb_trees:empty())),
-       ?_assert([] == trie_store([1], [])),
-       ?_assert([] == trie_store([], gb_trees:empty()))
+		=:= gb_trees:insert(1,
+				    gb_trees:insert(2, [],
+						    gb_trees:empty()),
+				    gb_trees:empty())),
+       ?_assert([] =:= trie_store([1], [])),
+       ?_assert([] =:= trie_store([], gb_trees:empty()))
       ]},
      {"basic storing and matching",
       [?_test(no = trie_match([], trie_new())),

@@ -186,7 +186,7 @@ start_task(Type, Fun, St0) ->
 insulator_process(Type, Fun, St0) ->
     process_flag(trap_exit, true),
     Parent = St0#procstate.parent,
-    if Type == local -> ok;
+    if Type =:= local -> ok;
        true -> Parent ! {ok, St0#procstate.ref, self()}
     end,
     St = St0#procstate{insulator = self()},

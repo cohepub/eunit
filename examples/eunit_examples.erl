@@ -1,7 +1,7 @@
 %% -------------------------------------------------------------------
 %% File: test.erl
 %%
-%% $Id:$ 
+%% $Id$ 
 %%
 %% @author Richard Carlsson <richard@virtutech.com>
 %% @copyright 2005 Richard Carlsson
@@ -130,32 +130,32 @@ higher_order_test_() ->
 	fun () -> 4711 end,
 	fun (4711) -> ok end,
 	fun (X) ->
-		[{"1st", ?_assert(X == 4711)},
-		 {"2nd", ?_assert(X == 4711)},
-		 {"3rd", ?_assert(X == 4711)}]
+		[{"1st", ?_assert(X =:= 4711)},
+		 {"2nd", ?_assert(X =:= 4711)},
+		 {"3rd", ?_assert(X =:= 4711)}]
 	end}
       },
       {"Foreach Test",
        {foreach,
 	fun () -> 4711 end,
 	fun (4711) -> ok end,
-	[fun (R) -> {"1st", ?_assert(R == 4711)} end,
-	 fun (R) -> {"2nd", ?_assert(R == 4711)} end,
-	 fun (R) -> {"3rd", ?_assert(R == 4711)} end]
+	[fun (R) -> {"1st", ?_assert(R =:= 4711)} end,
+	 fun (R) -> {"2nd", ?_assert(R =:= 4711)} end,
+	 fun (R) -> {"3rd", ?_assert(R =:= 4711)} end]
        }
       },
       {"ForeachX Test",
         {foreachx,
 	 fun (X) -> 4711 + X end,
-	 fun (X, R) when R - X == 4711 -> ok end,
+	 fun (X, R) when R - X =:= 4711 -> ok end,
 	 [{1, fun (X, R) -> {"1st",
-			     ?_assert((X == 1) and (R == 4712))}
+			     ?_assert((X =:= 1) and (R =:= 4712))}
 	      end},
 	  {2, fun (X, R) -> {"2nd",
-			     ?_assert((X == 2) and (R == 4713))}
+			     ?_assert((X =:= 2) and (R =:= 4713))}
 	      end},
 	  {3, fun (X, R) -> {"3rd",
-			     ?_assert((X == 3) and (R == 4714))}
+			     ?_assert((X =:= 3) and (R =:= 4714))}
 	      end}
 	 ]}
       },
@@ -165,17 +165,17 @@ higher_order_test_() ->
  	 fun (4711) -> ok end,
  	 fun (X) ->
  		 {with, X,
- 		  [fun (Y) -> ?assert(Y == 4711) end,
- 		   fun (Y) -> ?assert(Y == 4711) end,
- 		   fun (Y) -> ?assert(Y == 4711) end]}
+ 		  [fun (Y) -> ?assert(Y =:= 4711) end,
+ 		   fun (Y) -> ?assert(Y =:= 4711) end,
+ 		   fun (Y) -> ?assert(Y =:= 4711) end]}
  	 end},
  	{setup,
  	 fun () -> 4711 end,
  	 fun (4711) -> ok end,
  	 {with,
- 	  [fun (X) -> ?assert(X == 4711) end,
- 	   fun (X) -> ?assert(X == 4711) end,
- 	   fun (X) -> ?assert(X == 4711) end]
+ 	  [fun (X) -> ?assert(X =:= 4711) end,
+ 	   fun (X) -> ?assert(X =:= 4711) end,
+ 	   fun (X) -> ?assert(X =:= 4711) end]
  	 }
  	}
        ]
@@ -224,14 +224,14 @@ local_setup_test_() ->
     {setup, local,
      fun () -> put(foo, 42) end,
      fun (_) -> erase(foo) end,
-     ?_assert(42 == get(foo))
+     ?_assert(42 =:= get(foo))
     }.
 
 nonlocal_setup_test_() ->
     {setup,
      fun () -> put(foo, 42) end,
      fun (_) -> erase(foo) end,
-     ?_assert(undefined == get(foo))
+     ?_assert(undefined =:= get(foo))
     }.
 
 foreach_test_() ->
