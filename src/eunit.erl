@@ -201,7 +201,10 @@ listeners(Options) ->
     case proplists:get_value(event_log, Options) of
 	undefined ->
 	    [];
-	LogFile ->
+	X ->
+	    LogFile = if is_list(X) -> X;
+			 true -> "eunit-events.log"
+		      end,
 	    [spawn(fun () -> event_logger(LogFile) end)]
     end.
 
