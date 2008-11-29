@@ -102,31 +102,35 @@ start(Name, Options) ->
 	Pid -> Pid
     end.
 
--record(state, {name, time, dirs, files, clients, refs}).
+-record(state, {poll_time,  % polling interval (milliseconds)
+		dirs,       % map: directory path -> entry
+		files,      % map: file path -> entry
+		refs,       % map: file monitor Ref -> {Pid, Object}
+		clients     % map: client Pid -> erlang:monitor/2 Ref
+	       }).
 
-server_init(undefined = Name, Parent, Options) ->
+server_init(undefined, Parent, Options) ->
     %% anonymous server
-    server_init_1(Name, Parent, Options);
+    server_init_1(Parent, Options);
 server_init(Name, Parent, Options) ->
     case catch register(Name, self()) of
 	true ->
-	    server_init_1(Name, Parent, Options);
+	    server_init_1(Parent, Options);
 	_ ->
 	    Parent ! {self(), error},
 	    exit(failed)
     end.
 
-server_init_1(Name, Parent, Options) ->
+server_init_1(Parent, Options) ->
     Parent ! {self(), ok},
-    server(set_timer(init_state(Name, Options))).
+    server(set_timer(init_state(Options))).
 
-init_state(Name, Options) ->
+init_state(Options) ->
     Time = case proplists:get_value(poll_time, Options) of
 	       N when is_integer(N), N >= 100 -> N;
 	       _ -> ?POLL_TIME
 	   end,
-    #state{name = Name,
-	   time = Time,
+    #state{poll_time = Time,
 	   dirs = dict:new(),
 	   files = dict:new(),
 	   clients = dict:new(),
@@ -149,7 +153,7 @@ main(St) ->
 	time ->
 	    server(set_timer(poll(St)));
 	{'DOWN', _Ref, process, Pid, _Info} ->
-	    server(purge_pid(Pid, del_client(Pid, St)));
+	    server(del_client(Pid, St));
 	_ ->
 	    server(St)
     end.
@@ -158,7 +162,7 @@ server_reply(To, Msg) ->
     To ! {self(), Msg}.
 
 set_timer(St) ->
-    erlang:send_after(St#state.time, self(), time),
+    erlang:send_after(St#state.poll_time, self(), time),
     St.
 
 
@@ -173,7 +177,10 @@ add_client(Pid, St) ->
 	    St#state{clients = dict:store(Pid, Ref, St#state.clients)}
     end.
 
-del_client(Pid, St) ->
+%% deleting a client
+
+del_client(Pid, St0) ->
+    St = purge_pid(Pid, St0),
     case dict:find(Pid, St#state.clients) of
 	{ok, Ref} ->
 	    erlang:demonitor(Ref, [flush]),
@@ -196,7 +203,8 @@ new_monitor(Object, Pid, St) ->
 
 %% We must separate the namespaces for files and dirs, since we can't
 %% trust the users to keep them distinct; there may be simultaneous file
-%% and dir monitors for the same path.
+%% and dir monitors for the same path (and a file may be deleted and
+%% replaced by a directory of the same name, or vice versa).
 
 new_monitor({file, Path}, Monitor, Ref, St) ->
     {Ref, St#state{files = add_monitor(Path, Monitor, file,
@@ -259,7 +267,7 @@ purge_monitor_ref(Ref, Entry) ->
 			    end,
 			    Entry#entry.monitors)}.
 
-%% purging monitors belonging to dead clients
+%% purging monitoring information related to a deleted client Pid
 
 purge_pid(Pid, St) ->
     Files = dict:map(fun (_Path, Entry) ->
@@ -293,8 +301,8 @@ purge_empty_sets(Dict) ->
 		end, Dict).
 
 
-%% generating events upon state changes
-
+%% Generating events upon state changes by comparing old and new states
+%% 
 %% Message formats:
 %%   {exists, Path, Type, #file_info{}, Files}
 %%   {changed, Path, Type, #file_info{}, Files}
@@ -322,19 +330,18 @@ event(_OldEntry, #entry{info = NewInfo}=Entry, Type, Path)
   when is_atom(NewInfo) ->
     %% file is not available
     cast({error, Path, Type, NewInfo}, Entry#entry.monitors);
-event(_OldEntry, Entry, file, Path) ->
-    %% a normal file has changed
-    cast({changed, Path, file, Entry#entry.info, []},
-	 Entry#entry.monitors);
+event(_OldEntry, #entry{info = Info}=Entry, file, Path) ->
+    %% a normal file has changed or simply become accessible
+    cast({changed, Path, file, Info, []}, Entry#entry.monitors);
 event(#entry{info = OldInfo}, #entry{info = NewInfo}=Entry, dir, Path)
   when is_atom(OldInfo) ->
-    %% a directory has suddenly become available
+    %% a directory has become accessible
     Files = [{added, F} || F <- Entry#entry.files],
     cast({changed, Path, dir, NewInfo, Files}, Entry#entry.monitors);
-event(OldEntry, #entry{info = NewInfo}=Entry, dir, Path) ->
+event(OldEntry, #entry{info = Info}=Entry, dir, Path) ->
     %% a directory has changed
     Files = diff_lists(Entry#entry.files, OldEntry#entry.files),
-    cast({changed, Path, dir, NewInfo, Files}, Entry#entry.monitors).
+    cast({changed, Path, dir, Info, Files}, Entry#entry.monitors).
 
 
 poll(St) ->
