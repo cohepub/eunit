@@ -61,7 +61,7 @@ format_exception({Class,Term,Trace})
     case is_stacktrace(Trace) of
 	true ->
 	    io_lib:format("~w:~P\n~s",
-			  [Class, Term, 15, format_stacktrace(Trace)]);
+			  [Class, Term, 20, format_stacktrace(Trace)]);
 	false ->
 	    format_term(Term)
     end;
