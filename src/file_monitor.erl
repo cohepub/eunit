@@ -33,9 +33,8 @@
 -export([handle_call/3, handle_cast/2, handle_info/2, code_change/3,
 	 terminate/2]).
 
-%% -export([test/0]).
-
 -include_lib("kernel/include/file.hrl").
+-include_lib("eunit/include/eunit.hrl").
 
 
 %% The behaviour of this service is inspired by the open source FAM
@@ -55,7 +54,7 @@
 -record(state, {poll_time,  % polling interval (milliseconds)
 		dirs,       % map: directory path -> entry
 		files,      % map: file path -> entry
-		refs,       % map: file monitor Ref -> {Pid, Object}
+		refs,       % map: monitor Ref -> {Pid,set(Object)}
 		clients     % map: client Pid -> erlang:monitor/2 Ref
 	       }).
 
@@ -225,31 +224,38 @@ del_client(Pid, St0) ->
 	    St
     end.
 
+%% Adding a new monitor
 
 new_monitor(Object, Pid, St) ->
     Ref = make_ref(),
+    new_monitor(Object, Pid, Ref, St).
+
+new_monitor(Object, Pid, Ref, St) ->
+    Objects = case dict:find(Ref, St#state.refs) of
+		  {ok, {_Pid, Set}} -> Set;
+		  error -> sets:new()
+	      end,
+    Refs = dict:store(Ref, {Pid, sets:add_element(Object, Objects)},
+		      St#state.refs),
     Monitor = #monitor{pid = Pid, reference = Ref},
-    new_monitor(Object, Monitor, Ref,
-		St#state{refs = dict:store(Ref, {Pid, Object},
-					   St#state.refs)}).
+    {Ref, monitor_path(Object, Monitor, St#state{refs = Refs})}.
 
-%% We must separate the namespaces for files and dirs, since we can't
-%% trust the users to keep them distinct; there may be simultaneous file
-%% and dir monitors for the same path (and a file may be deleted and
-%% replaced by a directory of the same name, or vice versa).
+%% We must separate the namespaces for files and dirs; there may be
+%% simultaneous file and dir monitors for the same path, and a file may
+%% be deleted and replaced by a directory of the same name, or vice
+%% versa. The client should know (more or less) if a path is expected to
+%% refer to a file or a directory.
 
-new_monitor({file, Path}, Monitor, Ref, St) ->
-    {Ref, St#state{files = add_monitor(Path, Monitor, file,
-				       St#state.files)}};
-new_monitor({dir, Path}, Monitor, Ref, St) ->
-    {Ref, St#state{dirs = add_monitor(Path, Monitor, dir,
-				      St#state.dirs)}}.
+monitor_path({file, Path}, Monitor, St) ->
+    St#state{files = monitor_path(Path, Monitor, file, St#state.files)};
+monitor_path({dir, Path}, Monitor, St) ->
+    St#state{dirs = monitor_path(Path, Monitor, dir, St#state.dirs)}.
 
-%% Adding a new monitor forces an immediate poll of the file, such that
+%% Adding a new monitor forces an immediate poll of the path, such that
 %% previous monitors only see any real change, while the new monitor
 %% either gets {exists, ...} or {error, ...}.
 
-add_monitor(Path, Monitor, Type, Dict) ->
+monitor_path(Path, Monitor, Type, Dict) ->
     Entry = case dict:find(Path, Dict) of
 		{ok, OldEntry} -> poll_file(Path, OldEntry, Type);
 		error -> new_entry(Path, Type)
@@ -270,19 +276,22 @@ new_entry(Path, Type) ->
 
 delete_monitor(Ref, St) ->
     case dict:find(Ref, St#state.refs) of
-	{ok, {_Pid, Object}} ->
-	    St1 = St#state{refs = dict:erase(Ref, St#state.refs)},
-	    delete_monitor_1(Ref, Object, St1);
+	{ok, {_Pid, Objects}} ->
+	    sets:fold(fun (Object, St0) ->
+			      demonitor_path(Ref, Object, St0)
+		      end,
+		      St#state{refs = dict:erase(Ref, St#state.refs)},
+		      Objects);
 	error ->
 	    St
     end.
 
-delete_monitor_1(Ref, {file, Path}, St) ->
-    St#state{files = delete_monitor_2(Path, Ref, St#state.files)};
-delete_monitor_1(Ref, {dir, Path}, St) ->
-    St#state{dirs = delete_monitor_2(Path, Ref, St#state.dirs)}.
+demonitor_path(Ref, {file, Path}, St) ->
+    St#state{files = demonitor_path_1(Path, Ref, St#state.files)};
+demonitor_path(Ref, {dir, Path}, St) ->
+    St#state{dirs = demonitor_path_1(Path, Ref, St#state.dirs)}.
 
-delete_monitor_2(Path, Ref, Dict) ->
+demonitor_path_1(Path, Ref, Dict) ->
     case dict:find(Path, Dict) of
 	{ok, Entry} -> 
 	    purge_empty_sets(
@@ -300,6 +309,7 @@ purge_monitor_ref(Ref, Entry) ->
 			    Entry#entry.monitors)}.
 
 %% purging monitoring information related to a deleted client Pid
+%% TODO: this should use the refs mapping to avoid visiting all paths
 
 purge_pid(Pid, St) ->
     Files = dict:map(fun (_Path, Entry) ->
@@ -438,6 +448,7 @@ diff_lists([], []) ->
 
 
 %% Multicasting events to clients
+%% TODO: user selectable message tag, from server startup options?
 
 cast(Msg, Monitors) ->
     sets:fold(fun (#monitor{pid = Pid, reference = Ref}, Msg) ->
@@ -447,10 +458,49 @@ cast(Msg, Monitors) ->
 	      end,
 	      Msg, Monitors).
 
-%% test() ->
-%%     Pid = spawn(fun loop/0),
-%%     register(fred,Pid).
+-ifdef(EUNIT).
 
-%% loop() ->
-%%     receive X -> erlang:display(X) end,
-%%     loop().
+new_test_server() ->
+    {ok, Server} = ?MODULE:start(undefined, []),
+    Server.
+
+stop_test_server(Server) ->
+    ?MODULE:stop(Server).
+
+basic_test_() ->
+    %% Start and stop the server for each basic test
+    {foreach,
+     fun new_test_server/0,
+     fun stop_test_server/1,
+     [{with, [fun return_value_test/1]},
+      {with, [fun flatten_path_test/1]},
+      {with, [fun no_file_test/1]}
+     ]
+    }.
+
+return_value_test(Server) ->
+    Path = "/tmp/nonexisting",  % flat string
+    MonitorResult = ?MODULE:monitor_file(Server, Path, self()),
+    ?assertMatch({ok, Path, Ref} when is_reference(Ref), MonitorResult),
+    {ok, _, MonitorRef} = MonitorResult,
+    ?assertMatch(ok, ?MODULE:demonitor(Server, MonitorRef)),
+    ?assertMatch({ok, Path, Ref} when is_reference(Ref),
+		 ?MODULE:monitor_dir(Server, Path, self())).
+
+flatten_path_test(Server) ->
+    Path = ["/","tmp","/","foo"],
+    ?assertMatch({ok, "/tmp/foo", _},
+		 ?MODULE:monitor_file(Server, Path, self())),
+    ?assertMatch({ok, "/tmp/foo", _},
+		 ?MODULE:monitor_dir(Server, Path, self())).
+
+no_file_test(Server) ->
+    Path = "/tmp/nonexisting",
+    {ok, Path, Ref} = ?MODULE:monitor_file(Server, Path, self()),
+    receive
+	Msg ->
+	    ?assertMatch({file_monitor, Ref, {error, Path, file, enoent}},
+			 Msg)
+    end.
+
+-endif.
