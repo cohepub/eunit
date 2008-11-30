@@ -83,9 +83,10 @@ monitor_dir(Server, Path, Pid) ->
 
 
 monitor(Server, Type, Path, Pid) when is_pid(Pid) ->
-    Cmd = {monitor, {Type, filename:flatten(Path)}, Pid},
+    FlatPath = filename:flatten(Path),
+    Cmd = {monitor, {Type, FlatPath}, Pid},
     {ok, Ref} = gen_server:call(Server, Cmd),
-    {ok, Path, Ref}.
+    {ok, FlatPath, Ref}.
 
 
 demonitor(Ref) ->
