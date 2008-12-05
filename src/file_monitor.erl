@@ -24,14 +24,15 @@
 
 -behaviour(gen_server).
 
--export([start/0, start/1, start/2, start_link/0, start_link/1,
-	 start_link/2, stop/0, stop/1, init/1, monitor_file/2,
-	 monitor_file/3, monitor_dir/2, monitor_dir/3, demonitor/1,
-	 demonitor/2, get_poll_time/0, get_poll_time/1, set_poll_time/1,
-	 set_poll_time/2]).
+-export([monitor_file/2, monitor_file/3, monitor_dir/2, monitor_dir/3,
+	 demonitor/1, demonitor/2, get_poll_time/0, get_poll_time/1,
+	 set_poll_time/1, set_poll_time/2]).
 
--export([handle_call/3, handle_cast/2, handle_info/2, code_change/3,
-	 terminate/2]).
+-export([start/0, start/1, start/2, start_link/0, start_link/1,
+	 start_link/2, stop/0, stop/1]).
+
+-export([init/1, handle_call/3, handle_cast/2, handle_info/2,
+	 code_change/3, terminate/2]).
 
 -include_lib("kernel/include/file.hrl").
 -include_lib("eunit/include/eunit.hrl").
@@ -458,6 +459,9 @@ cast(Msg, Monitors) ->
 	      end,
 	      Msg, Monitors).
 
+%% ------------------------------------------------------------------------
+%% Unit tests
+
 -ifdef(EUNIT).
 
 new_test_server() ->
@@ -469,14 +473,21 @@ stop_test_server(Server) ->
 
 basic_test_() ->
     %% Start and stop the server for each basic test
-    {foreach,
-     fun new_test_server/0,
-     fun stop_test_server/1,
-     [{with, [fun return_value_test/1]},
-      {with, [fun flatten_path_test/1]},
-      {with, [fun no_file_test/1]}
-     ]
-    }.
+    case os:type() of
+	{unix,_} ->
+	    {foreach,
+	     fun new_test_server/0,
+	     fun stop_test_server/1,
+	     [{with, [fun return_value_test/1]},
+	      {with, [fun flatten_path_test/1]},
+	      {with, [fun no_file_test/1]}
+	     ]
+	    };
+	_ ->
+	    []
+    end.
+
+%% All the below tests run only on unix-like platforms
 
 return_value_test(Server) ->
     Path = "/tmp/nonexisting",  % flat string
