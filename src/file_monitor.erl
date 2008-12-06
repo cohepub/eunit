@@ -78,10 +78,8 @@ monitor_file(Server, Path, Pid) ->
 monitor_dir(Path, Pid) ->
     monitor_dir(?SERVER, Path, Pid).
 
-%% TODO: change 'dir' to 'directory'
-
 monitor_dir(Server, Path, Pid) ->
-    monitor(Server, dir, Path, Pid).
+    monitor(Server, directory, Path, Pid).
 
 
 monitor(Server, Type, Path, Pid) when is_pid(Pid) ->
@@ -244,15 +242,15 @@ new_monitor(Object, Pid, Ref, St) ->
     {Ref, monitor_path(Object, Monitor, St#state{refs = Refs})}.
 
 %% We must separate the namespaces for files and dirs; there may be
-%% simultaneous file and dir monitors for the same path, and a file may
-%% be deleted and replaced by a directory of the same name, or vice
-%% versa. The client should know (more or less) if a path is expected to
-%% refer to a file or a directory.
+%% simultaneous file and directory monitors for the same path, and a
+%% file may be deleted and replaced by a directory of the same name, or
+%% vice versa. The client should know (more or less) if a path is
+%% expected to refer to a file or a directory.
 
 monitor_path({file, Path}, Monitor, St) ->
     St#state{files = monitor_path(Path, Monitor, file, St#state.files)};
-monitor_path({dir, Path}, Monitor, St) ->
-    St#state{dirs = monitor_path(Path, Monitor, dir, St#state.dirs)}.
+monitor_path({directory, Path}, Monitor, St) ->
+    St#state{dirs = monitor_path(Path, Monitor, directory, St#state.dirs)}.
 
 %% Adding a new monitor forces an immediate poll of the path, such that
 %% previous monitors only see any real change, while the new monitor
@@ -291,7 +289,7 @@ delete_monitor(Ref, St) ->
 
 demonitor_path(Ref, {file, Path}, St) ->
     St#state{files = demonitor_path_1(Path, Ref, St#state.files)};
-demonitor_path(Ref, {dir, Path}, St) ->
+demonitor_path(Ref, {directory, Path}, St) ->
     St#state{dirs = demonitor_path_1(Path, Ref, St#state.dirs)}.
 
 demonitor_path_1(Path, Ref, Dict) ->
@@ -355,10 +353,11 @@ purge_empty_sets(Dict) ->
 %%   {changed, Path, Type, #file_info{}, Files}
 %%   {error, Path, Type, Info}
 %%
-%% Type is dir or file, as specified by the monitor type, not by the
-%% actual type on disk. If Type is file, Files is always []. If Type is
-%% dir, Files is a list of {added, FileName} and {deleted, FileName},
-%% where FileName is relative to dir, without any path component.
+%% Type is file or directory, as specified by the monitor type, not by
+%% the actual type on disk. If Type is file, Files is always []. If Type
+%% is directory, Files is a list of {added, FileName} and {deleted,
+%% FileName}, where FileName is on basename form, i.e., without any
+%% directory component.
 %%
 %% When a new monitor is installed for a path, an initial {exists,...}
 %% or {error,...} message will be sent to the monitor owner.
@@ -384,15 +383,15 @@ event(_OldEntry, #entry{info = NewInfo}=Entry, Type, Path)
 event(_OldEntry, #entry{info = Info}=Entry, file, Path) ->
     %% a normal file has changed or simply become accessible
     cast({changed, Path, file, Info, []}, Entry#entry.monitors);
-event(#entry{info = OldInfo}, #entry{info = NewInfo}=Entry, dir, Path)
+event(#entry{info = OldInfo}, #entry{info = NewInfo}=Entry, directory, Path)
   when is_atom(OldInfo) ->
     %% a directory has become accessible
     Files = [{added, F} || F <- Entry#entry.files],
-    cast({changed, Path, dir, NewInfo, Files}, Entry#entry.monitors);
-event(OldEntry, #entry{info = Info}=Entry, dir, Path) ->
+    cast({changed, Path, directory, NewInfo, Files}, Entry#entry.monitors);
+event(OldEntry, #entry{info = Info}=Entry, directory, Path) ->
     %% a directory has changed
     Files = diff_lists(Entry#entry.files, OldEntry#entry.files),
-    cast({changed, Path, dir, Info, Files}, Entry#entry.monitors).
+    cast({changed, Path, directory, Info, Files}, Entry#entry.monitors).
 
 
 poll(St) ->
@@ -401,7 +400,7 @@ poll(St) ->
 			      end,
 			      St#state.files),
 	     dirs = dict:map(fun (Path, Entry) ->
-				     poll_file(Path, Entry, dir)
+				     poll_file(Path, Entry, directory)
 			     end,
 			     St#state.dirs)}.
 
@@ -412,12 +411,12 @@ poll_file(Path, Entry, Type) ->
 
 %% TODO: check Type against #file_info.type (directory|regular|...)
 %% and change status to posix error code (enotdir) if no match
-%% (at least if Type is dir)
+%% (at least if Type is directory)
 
 refresh_entry(Path, Entry, Type) ->
     Info = get_file_info(Path),
     Files = case Type of
-		dir when not is_atom(Info) -> get_dir_files(Path);	    
+		directory when not is_atom(Info) -> get_dir_files(Path);
 		_ -> []
 	    end,
     Entry#entry{info = Info, files = Files}.
@@ -534,7 +533,7 @@ no_dir_test(Server) ->
     {ok, Path, Ref} = ?MODULE:monitor_dir(Server, Path, self()),
     receive
 	Msg ->
-	    ?assertMatch({?MODULE, Ref, {error, Path, dir, enoent}},
+	    ?assertMatch({?MODULE, Ref, {error, Path, directory, enoent}},
 			 Msg)
     end.
 
@@ -544,7 +543,7 @@ existing_dir_test(Server) ->
     receive
 	Msg ->
 	    ?assertMatch({?MODULE, Ref,
-			  {exists, Path, dir, #file_info{}, Es}}
+			  {exists, Path, directory, #file_info{}, Es}}
 			 when (is_list(Es) and (Es =/= [])), Msg)
     end.
 
@@ -554,7 +553,7 @@ existing_file_test(Server) ->
     receive
 	Msg ->
 	    ?assertMatch({file_monitor, Ref,
-			  {exists, Path, dir, #file_info{}, []}}, Msg)
+			  {exists, Path, directory, #file_info{}, []}}, Msg)
     end.
 
 
