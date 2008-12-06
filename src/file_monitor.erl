@@ -51,6 +51,7 @@
 -define(DEFAULT_POLL_TIME, 5000).  % change with option poll_time
 -define(MIN_POLL_TIME, 100).
 -define(SERVER, ?MODULE).
+-define(MSGTAG, ?SERVER).
 
 -record(state, {poll_time,  % polling interval (milliseconds)
 		dirs,       % map: directory path -> entry
@@ -409,18 +410,22 @@ poll_file(Path, Entry, Type) ->
     event(Entry, NewEntry, Type, Path),
     NewEntry.
 
-%% TODO: check Type against #file_info.type (directory|regular|...)
-%% and change status to posix error code (enotdir) if no match
-%% (at least if Type is directory)
-
 refresh_entry(Path, Entry, Type) ->
     Info = get_file_info(Path),
-    Files = case Type of
-		directory when not is_atom(Info) -> get_dir_files(Path);
-		_ -> []
-	    end,
-    Entry#entry{info = Info, files = Files}.
-
+    case Type of
+	directory when not is_atom(Info) ->
+	    case Info#file_info.type of
+		directory ->
+		    Files = get_dir_files(Path),
+		    Entry#entry{info = Info, files = Files};
+		_ ->
+		    Entry#entry{info = enotdir}
+	    end;
+	_ ->
+	    %% if we're not monitoring this path as a directory, we
+	    %% don't care what it is exactly, but just track its status
+	    Entry#entry{info = Info}
+    end.
 
 %% We clear some fields of the file_info so that we only trigger on real
 %% changes; see the //kernel/file.erl manual and file.hrl for details.
@@ -465,7 +470,7 @@ diff_lists([], []) ->
 
 cast(Msg, Monitors) ->
     sets:fold(fun (#monitor{pid = Pid, reference = Ref}, Msg) ->
-		      Pid ! {?MODULE, Ref, Msg},
+		      Pid ! {?MSGTAG, Ref, Msg},
 		      Msg  % note that this is a fold, not a map
 	      end,
 	      Msg, Monitors).
@@ -494,7 +499,9 @@ basic_test_() ->
 	      {with, [fun no_file_test/1]},
 	      {with, [fun no_dir_test/1]},
 	      {with, [fun existing_dir_test/1]},
-	      {with, [fun existing_file_test/1]}
+	      {with, [fun existing_file_test/1]},
+	      {with, [fun notdir_test/1]},
+	      {with, [fun dir_as_file_test/1]}
 	     ]
 	    };
 	_ ->
@@ -524,7 +531,7 @@ no_file_test(Server) ->
     {ok, Path, Ref} = ?MODULE:monitor_file(Server, Path, self()),
     receive
 	Msg ->
-	    ?assertMatch({?MODULE, Ref, {error, Path, file, enoent}},
+	    ?assertMatch({?MSGTAG, Ref, {error, Path, file, enoent}},
 			 Msg)
     end.
 
@@ -533,7 +540,7 @@ no_dir_test(Server) ->
     {ok, Path, Ref} = ?MODULE:monitor_dir(Server, Path, self()),
     receive
 	Msg ->
-	    ?assertMatch({?MODULE, Ref, {error, Path, directory, enoent}},
+	    ?assertMatch({?MSGTAG, Ref, {error, Path, directory, enoent}},
 			 Msg)
     end.
 
@@ -542,19 +549,40 @@ existing_dir_test(Server) ->
     {ok, Path, Ref} = ?MODULE:monitor_dir(Server, Path, self()),
     receive
 	Msg ->
-	    ?assertMatch({?MODULE, Ref,
+	    %% we should get a nonempty list of directory entries
+	    ?assertMatch({?MSGTAG, Ref,
 			  {exists, Path, directory, #file_info{}, Es}}
 			 when (is_list(Es) and (Es =/= [])), Msg)
     end.
 
 existing_file_test(Server) ->
     Path = "/etc/passwd",
+    {ok, Path, Ref} = ?MODULE:monitor_file(Server, Path, self()),
+    receive
+	Msg ->
+	    ?assertMatch({?MSGTAG, Ref,
+			  {exists, Path, file, #file_info{}, []}}, Msg)
+    end.
+
+notdir_test(Server) ->
+    Path = "/etc/passwd",
     {ok, Path, Ref} = ?MODULE:monitor_dir(Server, Path, self()),
     receive
 	Msg ->
-	    ?assertMatch({file_monitor, Ref,
-			  {exists, Path, directory, #file_info{}, []}}, Msg)
+	    ?assertMatch({?MSGTAG, Ref,
+			  {error, Path, directory, enotdir}}, Msg)
+    end.
+
+dir_as_file_test(Server) ->
+    Path = "/etc",
+    {ok, Path, Ref} = ?MODULE:monitor_file(Server, Path, self()),
+    receive
+	Msg ->
+	    %% we should get an empty list of directory entries,
+	    %% since we are just monitoring it as a file
+	    ?assertMatch({?MSGTAG, Ref,
+			  {exists, Path, file, #file_info{}, []}}, Msg)
     end.
 
 
--endif.
+-endif. %% ifdef EUNIT
