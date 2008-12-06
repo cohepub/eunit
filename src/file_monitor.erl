@@ -78,6 +78,8 @@ monitor_file(Server, Path, Pid) ->
 monitor_dir(Path, Pid) ->
     monitor_dir(?SERVER, Path, Pid).
 
+%% TODO: change 'dir' to 'directory'
+
 monitor_dir(Server, Path, Pid) ->
     monitor(Server, dir, Path, Pid).
 
@@ -344,6 +346,8 @@ purge_empty_sets(Dict) ->
 		end, Dict).
 
 
+%% FIXME: clarify role of Type below: it is the monitor Type, not actual file type (see the file_info record for that)
+
 %% Generating events upon state changes by comparing old and new states
 %% 
 %% Message formats:
@@ -351,7 +355,8 @@ purge_empty_sets(Dict) ->
 %%   {changed, Path, Type, #file_info{}, Files}
 %%   {error, Path, Type, Info}
 %%
-%% Type is dir or file. If Type is file, Files is always []. If Type is
+%% Type is dir or file, as specified by the monitor type, not by the
+%% actual type on disk. If Type is file, Files is always []. If Type is
 %% dir, Files is a list of {added, FileName} and {deleted, FileName},
 %% where FileName is relative to dir, without any path component.
 %%
@@ -359,6 +364,9 @@ purge_empty_sets(Dict) ->
 %% or {error,...} message will be sent to the monitor owner.
 %%
 %% Subsequent events will be either {changed,...} or {error,...}.
+%%
+%% The monitor reference is not included in the event descriptor itself,
+%% but is part of the main message format; see cast/2.
 
 event(#entry{info = Info}, #entry{info = Info}, _Type, _Path) ->
     %% no change in state
@@ -401,6 +409,10 @@ poll_file(Path, Entry, Type) ->
     NewEntry = refresh_entry(Path, Entry, Type),
     event(Entry, NewEntry, Type, Path),
     NewEntry.
+
+%% TODO: check Type against #file_info.type (directory|regular|...)
+%% and change status to posix error code (enotdir) if no match
+%% (at least if Type is dir)
 
 refresh_entry(Path, Entry, Type) ->
     Info = get_file_info(Path),
@@ -448,13 +460,13 @@ diff_lists([], []) ->
     [].
 
 
-%% Multicasting events to clients
-%% TODO: user selectable message tag, from server startup options?
+%% Multicasting events to clients. The message has the form
+%% {file_monitor, MonitorReference, Event}, where Event is described in
+%% more detail above, and 'file_monitor' is the name of this module.
 
 cast(Msg, Monitors) ->
     sets:fold(fun (#monitor{pid = Pid, reference = Ref}, Msg) ->
-		      %%erlang:display({file_monitor, Ref, Msg}),
-		      Pid ! {file_monitor, Ref, Msg},
+		      Pid ! {?MODULE, Ref, Msg},
 		      Msg  % note that this is a fold, not a map
 	      end,
 	      Msg, Monitors).
@@ -480,7 +492,10 @@ basic_test_() ->
 	     fun stop_test_server/1,
 	     [{with, [fun return_value_test/1]},
 	      {with, [fun flatten_path_test/1]},
-	      {with, [fun no_file_test/1]}
+	      {with, [fun no_file_test/1]},
+	      {with, [fun no_dir_test/1]},
+	      {with, [fun existing_dir_test/1]},
+	      {with, [fun existing_file_test/1]}
 	     ]
 	    };
 	_ ->
@@ -510,8 +525,37 @@ no_file_test(Server) ->
     {ok, Path, Ref} = ?MODULE:monitor_file(Server, Path, self()),
     receive
 	Msg ->
-	    ?assertMatch({file_monitor, Ref, {error, Path, file, enoent}},
+	    ?assertMatch({?MODULE, Ref, {error, Path, file, enoent}},
 			 Msg)
     end.
+
+no_dir_test(Server) ->
+    Path = "/tmp/nonexisting",
+    {ok, Path, Ref} = ?MODULE:monitor_dir(Server, Path, self()),
+    receive
+	Msg ->
+	    ?assertMatch({?MODULE, Ref, {error, Path, dir, enoent}},
+			 Msg)
+    end.
+
+existing_dir_test(Server) ->
+    Path = "/etc",
+    {ok, Path, Ref} = ?MODULE:monitor_dir(Server, Path, self()),
+    receive
+	Msg ->
+	    ?assertMatch({?MODULE, Ref,
+			  {exists, Path, dir, #file_info{}, Es}}
+			 when (is_list(Es) and (Es =/= [])), Msg)
+    end.
+
+existing_file_test(Server) ->
+    Path = "/etc/passwd",
+    {ok, Path, Ref} = ?MODULE:monitor_dir(Server, Path, self()),
+    receive
+	Msg ->
+	    ?assertMatch({file_monitor, Ref,
+			  {exists, Path, dir, #file_info{}, []}}, Msg)
+    end.
+
 
 -endif.
