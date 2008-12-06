@@ -416,7 +416,7 @@ refresh_entry(Path, Entry, Type) ->
 	directory when not is_atom(Info) ->
 	    case Info#file_info.type of
 		directory ->
-		    Files = get_dir_files(Path),
+		    Files = list_dir(Path),
 		    Entry#entry{info = Info, files = Files};
 		_ ->
 		    Entry#entry{info = enotdir}
@@ -442,7 +442,7 @@ get_file_info(Path) ->
 %% Listing the members of a directory; note that it yields the empty
 %% list if it fails - this is not the place for error detection.
 
-get_dir_files(Path) ->
+list_dir(Path) ->
     case file:list_dir(Path) of
 	{ok, Files} -> lists:sort(Files);
 	{error, _} -> []
