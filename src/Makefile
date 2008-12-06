@@ -24,6 +24,7 @@ SOURCES= \
 	eunit_tty.erl \
 	code_monitor.erl \
 	file_monitor.erl \
+	file_monitor_tests.erl \
 	autoload.erl
 
 OBJECTS=$(SOURCES:%.erl=$(EBIN)/%.$(EMULATOR)) $(APP_TARGET) $(APPUP_TARGET)
