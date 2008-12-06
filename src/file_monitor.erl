@@ -24,9 +24,10 @@
 
 -behaviour(gen_server).
 
--export([monitor_file/2, monitor_file/3, monitor_dir/2, monitor_dir/3,
-	 demonitor/1, demonitor/2, get_poll_time/0, get_poll_time/1,
-	 set_poll_time/1, set_poll_time/2]).
+-export([monitor_file/1, monitor_file/2, monitor_file/3, monitor_dir/1,
+	 monitor_dir/2, monitor_dir/3, demonitor/1, demonitor/2,
+	 get_poll_time/0, get_poll_time/1, set_poll_time/1,
+	 set_poll_time/2]).
 
 -export([start/0, start/1, start/2, start_link/0, start_link/1,
 	 start_link/2, stop/0, stop/1]).
@@ -69,21 +70,28 @@
 %% User interface
 %%
 
-monitor_file(Path, Pid) ->
-    monitor_file(?SERVER, Path, Pid).
+monitor_file(Path) ->
+    monitor_file(Path, []).
 
-monitor_file(Server, Path, Pid) ->
-    monitor(Server, file, Path, Pid).
+monitor_file(Path, Opts) ->
+    monitor_file(?SERVER, Path, Opts).
 
-
-monitor_dir(Path, Pid) ->
-    monitor_dir(?SERVER, Path, Pid).
-
-monitor_dir(Server, Path, Pid) ->
-    monitor(Server, directory, Path, Pid).
+monitor_file(Server, Path, Opts) ->
+    monitor(Server, Path, Opts, file).
 
 
-monitor(Server, Type, Path, Pid) when is_pid(Pid) ->
+monitor_dir(Path) ->
+    monitor_dir(Path, []).
+
+monitor_dir(Path, Opts) ->
+    monitor_dir(?SERVER, Path, Opts).
+
+monitor_dir(Server, Path, Opts) ->
+    monitor(Server, Path, Opts, directory).
+
+
+monitor(Server, Path, Opts, Type) ->
+    Pid = proplists:get_value(client, Opts, self()),
     FlatPath = filename:flatten(Path),
     Cmd = {monitor, {Type, FlatPath}, Pid},
     {ok, Ref} = gen_server:call(Server, Cmd),

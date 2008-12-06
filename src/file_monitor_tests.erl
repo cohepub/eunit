@@ -53,23 +53,23 @@ basic_test_() ->
 
 return_value_test(Server) ->
     Path = "/tmp/nonexisting",  % flat string
-    MonitorResult = ?SERVER:monitor_file(Server, Path, self()),
+    MonitorResult = ?SERVER:monitor_file(Server, Path, []),
     ?assertMatch({ok, Path, Ref} when is_reference(Ref), MonitorResult),
     {ok, _, MonitorRef} = MonitorResult,
     ?assertMatch(ok, ?SERVER:demonitor(Server, MonitorRef)),
     ?assertMatch({ok, Path, Ref} when is_reference(Ref),
-		 ?SERVER:monitor_dir(Server, Path, self())).
+		 ?SERVER:monitor_dir(Server, Path, [])).
 
 flatten_path_test(Server) ->
     Path = ["/","tmp","/","foo"],
     ?assertMatch({ok, "/tmp/foo", _},
-		 ?SERVER:monitor_file(Server, Path, self())),
+		 ?SERVER:monitor_file(Server, Path, [])),
     ?assertMatch({ok, "/tmp/foo", _},
-		 ?SERVER:monitor_dir(Server, Path, self())).
+		 ?SERVER:monitor_dir(Server, Path, [])).
 
 no_file_test(Server) ->
     Path = "/tmp/nonexisting",
-    {ok, Path, Ref} = ?SERVER:monitor_file(Server, Path, self()),
+    {ok, Path, Ref} = ?SERVER:monitor_file(Server, Path, []),
     receive
 	Msg ->
 	    ?assertMatch({?MSGTAG, Ref, {error, Path, file, enoent}},
@@ -78,7 +78,7 @@ no_file_test(Server) ->
 
 no_dir_test(Server) ->
     Path = "/tmp/nonexisting",
-    {ok, Path, Ref} = ?SERVER:monitor_dir(Server, Path, self()),
+    {ok, Path, Ref} = ?SERVER:monitor_dir(Server, Path, []),
     receive
 	Msg ->
 	    ?assertMatch({?MSGTAG, Ref, {error, Path, directory, enoent}},
@@ -87,7 +87,7 @@ no_dir_test(Server) ->
 
 existing_dir_test(Server) ->
     Path = "/etc",
-    {ok, Path, Ref} = ?SERVER:monitor_dir(Server, Path, self()),
+    {ok, Path, Ref} = ?SERVER:monitor_dir(Server, Path, []),
     receive
 	Msg ->
 	    %% we should get a nonempty list of directory entries
@@ -98,7 +98,7 @@ existing_dir_test(Server) ->
 
 existing_file_test(Server) ->
     Path = "/etc/passwd",
-    {ok, Path, Ref} = ?SERVER:monitor_file(Server, Path, self()),
+    {ok, Path, Ref} = ?SERVER:monitor_file(Server, Path, []),
     receive
 	Msg ->
 	    ?assertMatch({?MSGTAG, Ref,
@@ -107,7 +107,7 @@ existing_file_test(Server) ->
 
 notdir_test(Server) ->
     Path = "/etc/passwd",
-    {ok, Path, Ref} = ?SERVER:monitor_dir(Server, Path, self()),
+    {ok, Path, Ref} = ?SERVER:monitor_dir(Server, Path, []),
     receive
 	Msg ->
 	    ?assertMatch({?MSGTAG, Ref,
@@ -116,7 +116,7 @@ notdir_test(Server) ->
 
 dir_as_file_test(Server) ->
     Path = "/etc",
-    {ok, Path, Ref} = ?SERVER:monitor_file(Server, Path, self()),
+    {ok, Path, Ref} = ?SERVER:monitor_file(Server, Path, []),
     receive
 	Msg ->
 	    %% we should get an empty list of directory entries,
@@ -139,8 +139,7 @@ file_event_test_() ->
 			      Path = "/tmp/filemonitortestfile",
 			      remove_file(Path),
 			      {ok, Path, Ref} =
-				  ?SERVER:monitor_file(Server, Path,
-						       self()),
+				  ?SERVER:monitor_file(Server, Path, []),
 			      receive
 				  Msg ->
 				      ?assertMatch({?MSGTAG, Ref,
@@ -211,14 +210,12 @@ directory_event_test_() ->
 			      Path = "/tmp/filemonitortestdir",
 			      recursive_remove(Path),
 			      {ok, Path, Ref} =
-				  ?SERVER:monitor_dir(Server, Path,
-						      self()),
+				  ?SERVER:monitor_dir(Server, Path, []),
 			      receive
 				  Msg ->
 				      ?assertMatch({?MSGTAG, Ref,
 						    {error, Path,
-						     directory,
-						     enoent}},
+						     directory, enoent}},
 						   Msg)
 			      end,
 			      {Path, Ref}
