@@ -345,8 +345,6 @@ purge_empty_sets(Dict) ->
 		end, Dict).
 
 
-%% FIXME: clarify role of Type below: it is the monitor Type, not actual file type (see the file_info record for that)
-
 %% Generating events upon state changes by comparing old and new states
 %% 
 %% Message formats:
@@ -369,7 +367,9 @@ purge_empty_sets(Dict) ->
 %% but is part of the main message format; see cast/2.
 
 event(#entry{info = Info}, #entry{info = Info}, _Type, _Path) ->
-    %% no change in state
+    %% no change in state (note that we never compare directory entry
+    %% lists here; if there have been changes, the timestamps should
+    %% also be different - see list_dir/2 below)
     ok;
 event(#entry{info = undefined}, #entry{info = NewInfo}=Entry,
       Type, Path)
@@ -411,15 +411,23 @@ poll_file(Path, Entry, Type) ->
     NewEntry.
 
 refresh_entry(Path, Entry, Type) ->
+    OldInfo = Entry#entry.info,
     Info = get_file_info(Path),
     case Type of
 	directory when not is_atom(Info) ->
 	    case Info#file_info.type of
-		directory ->
-		    Files = list_dir(Path),
+		directory when is_atom(OldInfo)
+		; Info#file_info.mtime =/= OldInfo#file_info.mtime ->
+		    %% we only list directories when they have new
+		    %% timestamps, to keep the polling cost down
+		    Files = list_dir(Path, Info#file_info.mtime),
 		    Entry#entry{info = Info, files = Files};
+		directory ->
+		    Entry#entry{info = Info};
 		_ ->
-		    Entry#entry{info = enotdir}
+		    %% attempting to monitor a non-directory as a
+		    %% directory is reported as an 'enotdir' error
+		    Entry#entry{info = enotdir, files = []}
 	    end;
 	_ ->
 	    %% if we're not monitoring this path as a directory, we
@@ -442,10 +450,31 @@ get_file_info(Path) ->
 %% Listing the members of a directory; note that it yields the empty
 %% list if it fails - this is not the place for error detection.
 
-list_dir(Path) ->
-    case file:list_dir(Path) of
-	{ok, Files} -> lists:sort(Files);
-	{error, _} -> []
+list_dir(Path, Mtime) ->
+    Files = case file:list_dir(Path) of
+		{ok, Fs} -> Fs;
+		{error, _} -> []
+	    end,
+    %% The directory access time should now be the time when we read the
+    %% listing (at least), i.e., the current time.
+    case file:read_file_info(Path) of
+	{ok, #file_info{atime = Atime}} when Mtime =:= Atime ->
+	    %% Recall that the timestamps have whole-second resolution.
+	    %% If we listed the directory during the same second that it
+	    %% was (or is still being) modified, it is possible that we
+	    %% did not see all the additions/deletions that were made
+	    %% that second - and in that case, we will not report those
+	    %% changes until the timestamp changes again (maybe never).
+	    %% To avoid that, we pause and list the directory again.
+	    %% This of course affects the latency of this server in
+	    %% certain situations, so a better solution would be to
+	    %% abort the current refresh for this directory and schedule
+	    %% it for a new asynchronous refresh after a small delay
+	    %% (unless the poll interval is already below 0.5 seconds).
+	    receive after 550 -> list_dir(Path, Mtime) end;
+	_ ->
+	    %% ignore possible errors when reading file_info as well
+	    lists:sort(Files)
     end.
 
 %% both lists must be sorted for this diff to work

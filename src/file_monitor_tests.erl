@@ -126,8 +126,8 @@ dir_as_file_test(Server) ->
     end.
 
 
-%% Event tests: this runs the same server over a group of tests
-event_test_() ->
+%% File event tests: this runs the server over a group of tests
+file_event_test_() ->
     case os:type() of
 	{unix,_} ->
 	    {setup,
@@ -176,8 +176,7 @@ create_file_subtest({Path, Ref}) ->
 	    ?assertMatch({?MSGTAG, Ref,
 			  {changed, Path, file,
 			   #file_info{type=regular}, []}}, Msg)
-    end,
-    assert_empty_mailbox().    
+    end.
 
 delete_file_subtest({Path, Ref}) ->
     assert_empty_mailbox(),
@@ -186,8 +185,7 @@ delete_file_subtest({Path, Ref}) ->
 	Msg ->
 	    ?assertMatch({?MSGTAG, Ref,
 			  {error, Path, file, enoent}}, Msg)
-    end,
-    assert_empty_mailbox().    
+    end.
 
 touch_file_subtest({Path, Ref}) ->
     assert_empty_mailbox(),
@@ -197,8 +195,131 @@ touch_file_subtest({Path, Ref}) ->
 	    ?assertMatch({?MSGTAG, Ref,
  			  {changed, Path, file,
 			   #file_info{type=regular}, []}}, Msg)
-    end,
-    assert_empty_mailbox().    
+    end.
+
+
+%% Directory event tests: this runs the server over a group of tests
+directory_event_test_() ->
+    case os:type() of
+	{unix,_} ->
+	    {setup,
+	     fun new_test_server/0,
+	     fun stop_test_server/1,
+	     fun (Server) ->
+		     {setup, local,
+		      fun () ->
+			      Path = "/tmp/filemonitortestdir",
+			      recursive_remove(Path),
+			      {ok, Path, Ref} =
+				  ?SERVER:monitor_dir(Server, Path,
+						      self()),
+			      receive
+				  Msg ->
+				      ?assertMatch({?MSGTAG, Ref,
+						    {error, Path,
+						     directory,
+						     enoent}},
+						   Msg)
+			      end,
+			      {Path, Ref}
+		      end,
+		      {with,
+		       [fun create_dir_subtest/1,
+			fun delete_empty_dir_subtest/1,
+ 			fun create_dir_subtest/1,
+			fun delete_empty_dir_subtest/1,
+ 			fun create_dir_subtest/1,
+ 			fun create_subdir_subtest/1,
+ 			fun delete_subdir_subtest/1,
+ 			fun create_subdir_subtest/1,
+ 			fun create_subfile_subtest/1,
+ 			fun delete_subfile_subtest/1,
+ 			fun create_subfile_subtest/1,
+			fun delete_recursive_subtest/1
+		       ]}
+		     }
+	     end
+	    };
+	_ ->
+	    []
+    end.
+
+create_dir_subtest({Path, Ref}) ->
+    assert_empty_mailbox(),
+    make_dir(Path),
+    receive
+	Msg ->
+	    ?assertMatch({?MSGTAG, Ref,
+			  {changed, Path, directory,
+			   #file_info{type=directory}, []}}, Msg)
+    end.
+
+delete_empty_dir_subtest({Path, Ref}) ->
+    assert_empty_mailbox(),
+    remove_dir(Path),
+    receive
+	Msg ->
+	    ?assertMatch({?MSGTAG, Ref,
+			  {error, Path, directory, enoent}}, Msg)
+    end.
+
+create_subdir_subtest({Path, Ref}) ->
+    Subdir = "subdir",
+    assert_empty_mailbox(),
+    make_dir(filename:join(Path, Subdir)),
+    receive
+	Msg ->
+	    ?assertMatch({?MSGTAG, Ref,
+			  {changed, Path, directory,
+			   #file_info{type=directory},
+			   [{added, Subdir}]}}, Msg)
+    end.
+
+delete_subdir_subtest({Path, Ref}) ->
+    Subdir = "subdir",
+    assert_empty_mailbox(),
+    remove_dir(filename:join(Path, Subdir)),
+    receive
+	Msg ->
+	    ?assertMatch({?MSGTAG, Ref,
+			  {changed, Path, directory,
+			   #file_info{type=directory},
+			   [{deleted, Subdir}]}}, Msg)
+    end.
+
+create_subfile_subtest({Path, Ref}) ->
+    File = "file",
+    assert_empty_mailbox(),
+    write_file(filename:join(Path, File)),
+    receive
+	Msg ->
+	    ?assertMatch({?MSGTAG, Ref,
+			  {changed, Path, directory,
+			   #file_info{type=directory},
+			   [{added, File}]}}, Msg)
+    end.
+
+delete_subfile_subtest({Path, Ref}) ->
+    File = "file",
+    assert_empty_mailbox(),
+    remove_file(filename:join(Path, File)),
+    receive
+	Msg ->
+	    ?assertMatch({?MSGTAG, Ref,
+			  {changed, Path, directory,
+			   #file_info{type=directory},
+			   [{deleted, File}]}}, Msg)
+    end.
+
+delete_recursive_subtest({Path, Ref}) ->
+    assert_empty_mailbox(),
+    recursive_remove(Path),
+    receive
+	Msg ->
+	    ?assertMatch({?MSGTAG, Ref,
+			  {error, Path, directory, enoent}}, Msg)
+    end.
+
 
 %% test utilities
 
@@ -208,6 +329,11 @@ new_test_server() ->
 
 stop_test_server(Server) ->
     ?SERVER:stop(Server).
+
+assert_empty_mailbox() ->
+    receive MsgX -> throw({unexpected_message, MsgX})
+    after 0 -> ok
+    end.
 
 write_file(Path) ->
     case file:write_file(Path, <<"this is a test\n">>) of
@@ -229,7 +355,33 @@ remove_file(Path) ->
 	{error, Err} -> throw({could_not_delete, Err, Path})
     end.
 
-assert_empty_mailbox() ->
-    receive MsgX -> throw({unexpected_message, MsgX})
-    after 0 -> ok
+remove_dir(Path) ->
+    case file:del_dir(Path) of
+	ok -> ok;
+	{error, enoent} -> ok;
+	{error, Err} -> throw({could_not_delete, Err, Path})
+    end.
+
+recursive_remove(Path) ->
+    case file:read_file_info(Path) of
+	{ok, #file_info{type=directory}} ->
+	    lists:foreach(fun (Sub) ->
+				  recursive_remove(filename:join(Path,Sub))
+			  end,
+			  list_dir(Path)),
+	    remove_dir(Path);
+	_ ->
+	    remove_file(Path)
+    end.
+
+make_dir(Path) ->
+    case file:make_dir(Path) of
+	ok -> ok;
+	{error, Err} -> throw({could_not_make_dir, Err, Path})
+    end.    
+
+list_dir(Path) ->
+    case file:list_dir(Path) of
+	{ok, Files} -> Files;
+	{error, _} -> []
     end.
