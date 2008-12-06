@@ -480,15 +480,8 @@ cast(Msg, Monitors) ->
 
 -ifdef(EUNIT).
 
-new_test_server() ->
-    {ok, Server} = ?MODULE:start(undefined, []),
-    Server.
-
-stop_test_server(Server) ->
-    ?MODULE:stop(Server).
-
+%% Basic tests: these start and stop the server for each test
 basic_test_() ->
-    %% Start and stop the server for each basic test
     case os:type() of
 	{unix,_} ->
 	    {foreach,
@@ -582,6 +575,115 @@ dir_as_file_test(Server) ->
 	    %% since we are just monitoring it as a file
 	    ?assertMatch({?MSGTAG, Ref,
 			  {exists, Path, file, #file_info{}, []}}, Msg)
+    end.
+
+
+%% Event tests: this runs the same server over a group of tests
+event_test_() ->
+    case os:type() of
+	{unix,_} ->
+	    {setup,
+	     fun new_test_server/0,
+	     fun stop_test_server/1,
+	     fun (Server) ->
+		     {setup, local,
+		      fun () ->
+			      Path = "/tmp/filemonitortestfile",
+			      remove_file(Path),
+			      {ok, Path, Ref} =
+				  ?MODULE:monitor_file(Server, Path,
+						       self()),
+			      receive
+				  Msg ->
+				      ?assertMatch({?MSGTAG, Ref,
+						    {error, Path,
+						     file, enoent}},
+						   Msg)
+			      end,
+			      {Path, Ref}
+		      end,
+		      {with,
+		       [fun create_file_subtest/1,
+			fun delete_file_subtest/1,
+			fun create_file_subtest/1,
+			fun delete_file_subtest/1,
+			fun create_file_subtest/1,
+ 			fun touch_file_subtest/1,
+ 			fun touch_file_subtest/1,
+ 			fun touch_file_subtest/1,
+			fun delete_file_subtest/1
+		       ]}
+		     }
+	     end
+	    };
+	_ ->
+	    []
+    end.
+
+create_file_subtest({Path, Ref}) ->
+    assert_empty_mailbox(),
+    write_file(Path),
+    receive
+	Msg ->
+	    ?assertMatch({?MSGTAG, Ref,
+			  {changed, Path, file,
+			   #file_info{type=regular}, []}}, Msg)
+    end,
+    assert_empty_mailbox().    
+
+delete_file_subtest({Path, Ref}) ->
+    assert_empty_mailbox(),
+    remove_file(Path),
+    receive
+	Msg ->
+	    ?assertMatch({?MSGTAG, Ref,
+			  {error, Path, file, enoent}}, Msg)
+    end,
+    assert_empty_mailbox().    
+
+touch_file_subtest({Path, Ref}) ->
+    assert_empty_mailbox(),
+    touch_file(Path),
+    receive
+	Msg ->
+	    ?assertMatch({?MSGTAG, Ref,
+ 			  {changed, Path, file,
+			   #file_info{type=regular}, []}}, Msg)
+    end,
+    assert_empty_mailbox().    
+
+%% test utilities
+
+new_test_server() ->
+    {ok, Server} = ?MODULE:start(undefined, [{poll_time, 100}]),
+    Server.
+
+stop_test_server(Server) ->
+    ?MODULE:stop(Server).
+
+write_file(Path) ->
+    case file:write_file(Path, <<"this is a test\n">>) of
+	ok -> ok;
+	{error, Err} -> throw({could_not_write, Err, Path})
+    end.    
+
+touch_file(Path) ->
+    %% we must ensure that the new timestamp is at least one second
+    %% older than any previous write, otherwise the change may not be
+    %% detected due to the low timestamp resolution
+    receive after 1100 -> ok end,
+    write_file(Path).
+
+remove_file(Path) ->
+    case file:delete(Path) of
+	ok -> ok;
+	{error, enoent} -> ok;
+	{error, Err} -> throw({could_not_delete, Err, Path})
+    end.
+
+assert_empty_mailbox() ->
+    receive MsgX -> throw({unexpected_message, MsgX})
+    after 0 -> ok
     end.
 
 
