@@ -23,7 +23,8 @@
 -module(file_monitor_tests).
 
 -include_lib("kernel/include/file.hrl").
--include_lib("eunit/include/eunit.hrl").
+%%-include_lib("eunit/include/eunit.hrl").
+-include("../include/eunit.hrl").
 
 -define(SERVER, file_monitor).
 -define(MSGTAG, ?SERVER).

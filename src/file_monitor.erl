@@ -36,7 +36,8 @@
 	 code_change/3, terminate/2]).
 
 -include_lib("kernel/include/file.hrl").
--include_lib("eunit/include/eunit.hrl").
+%%-include_lib("eunit/include/eunit.hrl").
+-include("../include/eunit.hrl").
 
 
 %% The behaviour of this service is inspired by the open source FAM
