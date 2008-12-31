@@ -26,8 +26,10 @@
 
 -export([monitor_file/1, monitor_file/2, monitor_file/3, monitor_dir/1,
 	 monitor_dir/2, monitor_dir/3, automonitor/1, automonitor/2,
-	 automonitor/3, demonitor/1, demonitor/2, get_poll_time/0,
-	 get_poll_time/1, set_poll_time/1, set_poll_time/2]).
+	 automonitor/3, demonitor/1, demonitor/2, demonitor_file/2,
+	 demonitor_file/3, demonitor_dir/2, demonitor_dir/3,
+	 get_poll_time/0, get_poll_time/1, set_poll_time/1,
+	 set_poll_time/2]).
 
 -export([start/0, start/1, start/2, start_link/0, start_link/1,
 	 start_link/2, stop/0, stop/1]).
@@ -36,6 +38,7 @@
 	 code_change/3, terminate/2]).
 
 -include_lib("kernel/include/file.hrl").
+
 %%-include_lib("eunit/include/eunit.hrl").
 -include("../include/eunit.hrl").
 
@@ -82,6 +85,8 @@
 %% User interface
 %%
 
+%% TODO: should not allow adding/removing paths manually from automonitor ref
+
 monitor_file(Path) ->
     monitor_file(Path, []).
 
@@ -104,16 +109,14 @@ monitor_dir(Server, Path, Opts) ->
 
 %% not exported
 monitor(Server, Path, Opts, Type) ->
-    Pid = self(),  %% the Pid of the calling client
     FlatPath = filename:flatten(Path),
     Ref = case proplists:get_value(reference, Opts) of
-	      R when is_reference(R) -> R;
-	      undefined -> make_ref();
+	      R when is_reference(R) ; R =:= undefined -> R;
 	      _ -> erlang:error(badarg)
 	  end,
-    Cmd = {monitor, {Type, FlatPath}, Pid, Ref},
+    Cmd = {monitor, self(), {Type, FlatPath}, Ref},
     case gen_server:call(Server, Cmd) of
-	ok -> {ok, Ref, FlatPath};
+	{ok, Ref1} -> {ok, Ref1, FlatPath};
 	{error, Reason} -> {error, Reason}
     end.
 
@@ -125,9 +128,8 @@ automonitor(Path, Opts) ->
     automonitor(?SERVER, Path, Opts).
 
 automonitor(Server, Path, _Opts) ->
-    Pid = self(),  %% the Pid of the calling client
     FlatPath = filename:flatten(Path),
-    {ok, Ref} = gen_server:call(Server, {automonitor, Path, Pid}),
+    {ok, Ref} = gen_server:call(Server, {automonitor, self(), FlatPath}),
     {ok, FlatPath, Ref}.
 
 
@@ -135,7 +137,24 @@ demonitor(Ref) ->
     demonitor(?SERVER, Ref).
 
 demonitor(Server, Ref) when is_reference(Ref) ->
-    ok = gen_server:call(Server, {demonitor, Ref}).
+    ok = gen_server:call(Server, {demonitor, self(), Ref}).
+
+demonitor_file(Path, Ref) ->
+    demonitor_file(?SERVER, Path, Ref).
+
+demonitor_file(Server, Path, Ref) ->
+    demonitor(Server, Path, Ref, file).
+
+demonitor_dir(Path, Ref) ->
+    demonitor_dir(?SERVER, Path, Ref).
+
+demonitor_dir(Server, Path, Ref) ->
+    demonitor(Server, Path, Ref, directory).
+
+%% not exported
+demonitor(Server, Path, Ref, Type) when is_reference(Ref) ->
+    FlatPath = filename:flatten(Path),
+    ok = gen_server:call(Server, {demonitor, self(), {Type, FlatPath}, Ref}).
 
 
 get_poll_time() ->
@@ -198,20 +217,34 @@ init(Options) ->
     {ok, St}.
 
 
-handle_call({monitor, Object, Pid, Ref}, _From, St)
+handle_call({monitor, Pid, Object, undefined}, From, St) ->
+    handle_call({monitor, Pid, Object, make_ref()}, From, St);
+handle_call({monitor, Pid, Object, Ref}, _From, St)
   when is_pid(Pid), is_reference(Ref) ->
     try add_monitor(Object, Pid, Ref, St) of
-	St1 -> {reply, ok, register_client(Pid, Ref, St1)}
+	St1 -> {reply, {ok, Ref}, register_client(Pid, Ref, St1)}
     catch
 	not_owner ->
 	    {reply, {error, not_owner}, St}
     end;
-handle_call({demonitor, Ref}, _From, St) when is_reference(Ref) ->
-    {reply, ok, delete_monitor(Ref, St)};
-handle_call({automonitor, Path, Pid}, _From, St) when is_pid(Pid) ->
+handle_call({demonitor, Pid, Ref}, _From, St) when is_reference(Ref) ->
+    try delete_monitor(Pid, Ref, St) of
+	St1 -> {reply, ok, St1}
+    catch
+	not_owner ->
+	    {reply, {error, not_owner}, St}
+    end;
+handle_call({demonitor, Pid, Object, Ref}, _From, St) when is_reference(Ref) ->
+    try demonitor_path(Pid, Ref, Object, St) of
+	St1 -> {reply, ok, St1}
+    catch
+	not_owner ->
+	    {reply, {error, not_owner}, St}
+    end;
+handle_call({automonitor, Pid, Path}, _From, St) when is_pid(Pid) ->
     Ref = make_ref(),
-    St1 = automonitor(Path, Pid, Ref, St),
-    {reply, {ok, Ref}, register_client(Pid, Ref, St1)};
+    St1 = register_client(Pid, Ref, St),
+    {reply, {ok, Ref}, automonitor(Path, Pid, Ref, St1)};
 handle_call(get_poll_time, _From, St) ->
     {reply, St#state.poll_time, St};
 handle_call({set_poll_time, Time}, _From, St) ->
@@ -223,6 +256,7 @@ handle_cast(_, St) ->
     {noreply, St}.
 
 handle_info({?MSGTAG, Ref, Event}, St) ->
+    ?debugFmt("autoevent ~p",[{?MSGTAG, Ref, Event}]),
     %% auto-monitoring event to self
     case dict:find(Ref, St#state.refs) of
 	{ok, #monitor_info{pid=Pid}} ->
@@ -264,82 +298,96 @@ set_timer(St) ->
     erlang:send_after(St#state.poll_time, self(), poll_time),
     St.
 
-%% handle auto-monitoring events
+%% Handling of auto-monitoring events
+%%
+%% - If a new entry of an automonitored directory is discovered, make it
+%%   too automonitored (this does recursive monitoring by definition).
+%%
+%% - If an entry is deleted from an automonitored directory, remove any
+%%   automonitor from it and its subdirectories recursively (note that
+%%   by definition, this will never auto-remove the top automonitored
+%%   directory).
+%%
+%% - Note that when a demonitoring a directory recursively, we must
+%%   first look up its entry #state.dirs to find the last known
+%%   directory entries (the directory itself no longer exists), which
+%%   must be up to date with respect to the possible automonitors we
+%%   have.
+%%
+%% - An automonitored non-directory that changes type to directory, or
+%%   vice versa, should should cause recreation of the monitor to match
+%%   the new type.
+%%
+%% - Errors on automonitored files are assumed to be intermittent, i.e.,
+%%   not even enoent should in itself cause demonitoring - that is done
+%%   only if the containing directory reports that the file is removed.
+%%
+%% - Errors on automonitored directories cause immediate demonitoring of
+%%   the entries of the directory, but not the directory itself.
 
-autoevent({exists, Path, directory, #file_info{}=Info, Files}, Pid, Ref, St)
-  when Info#file_info.type =:= directory ->
-    %% add automonitoring to all directory entries
-    lists:foldl(fun ({added, File}) ->
-			automonitor(filename:join(Path, File), Pid, Ref, St)
-		end,
-		Files, St);
-autoevent({changed, Path, directory, #file_info{}=Info, Files}, Pid, Ref, St)
-  when Info#file_info.type =:= directory ->
+autoevent({Tag, Path, Type, #file_info{}=Info, _Files}, Pid, Ref, St)
+  when ((Tag =:= found) or (Tag =:= changed)),
+(((Type =:= file) and (Info#file_info.type =:= directory)) orelse
+ ((Type =:= directory) and (Info#file_info.type =/= directory))) ->
+    %% monitor type mismatch detected - recreate it to get correct type
+    automonitor(Path, Pid, Ref, autodemonitor(Path, Pid, Ref, St));
+autoevent({Tag, Path, directory, #file_info{}=Info, Files}, Pid, Ref, St0)
+  when ((Tag =:= found) or (Tag =:= changed)),
+Info#file_info.type =:= directory ->
     %% add/remove automonitoring to/from all added/deleted entries
-    lists:foldl(fun ({added, File}) ->
-			automonitor(filename:join(Path, File), Pid, Ref, St);
-		    ({deleted, File}) ->
-			autodemonitor(filename:join(Path, File), Pid, Ref, St)
+    lists:foldl(fun ({added, File}, St) ->
+			automonitor(filename:join(Path, File),
+				    Pid, Ref, St);
+		    ({deleted, File}, St) ->
+			autodemonitor(filename:join(Path, File),
+				      Pid, Ref, St)
 		end,
-		Files, St);
+		St0, Files);
+autoevent({error, _Path, directory, _}, _Pid, _Ref, St) ->
+    %% only demonitor subdirectories/files
+    St; %%autodemonitor(Path, Pid, Ref, St);
 autoevent(_Event, _Pid, _Ref, St) ->
-    %% TODO: other events that need handling?
     St.
 
-%% - if a new entry of an automonitored directory is discovered, make it
-%%   too automonitored (this does recursive monitoring by definition)
-%%
-%% - if an entry is deleted from an automonitored directory, remove any
-%%   automonitor from it and its subdirectories recursively (note that
-%%   the top level directory cannot be removed this way, by definition)
-%%
-%% - errors on automonitored files are assumed to be intermittent
-%%
-%% - an automonitored non-directory that changes type to directory
-%%   should cause recursive monitoring (changing monitor type from file
-%%   to directory)
-%%
-%% - an automonitored directory that changes type to non-directory
-%%   should cause recursive demonitoring of any subdirectories (changing
-%%   monitor type from directory to file)
-%%
-%% - not that when a demonitoring an ex-directory, we cannot list it to
-%%   find its subdirectory paths - we must check path prefixes!
-
 automonitor(Path, Pid, Ref, St) ->
-    %% Pid should be a known client already, otherwise ignore this
+    %% Pid should be a known client, otherwise do nothing
     case dict:is_key(Pid, St#state.clients) of
 	true ->
-	    case file:read_file_info(Path) of
-		{ok, #file_info{type=directory}} ->
-		    Object = {directory, Path},
-		    St1 = add_monitor(Object, Pid, Ref, St),
-		    add_automonitor(Object, Ref, St1);
-		_ ->
-		    add_monitor({file, Path}, Pid, Ref, St)
-	    end;
+	    ?debugFmt("automonitoring ~s",[Path]),
+	    Object = case file:read_file_info(Path) of
+			 {ok, #file_info{type=directory}} ->
+			     {directory, Path};
+			 _ ->
+			     {file, Path}    % also for errors
+		     end,
+	    St1 = add_monitor(Object, Pid, Ref, St),
+	    monitor_path(Object, self(), Ref, St1);
 	false ->
 	    St
     end.
 
-add_automonitor(_Object, _Ref, St) ->
-    %% the Object is always a directory here
-    %% FIXME:
-%%%     Objects = case dict:find(Ref, St#state.refs) of
-%%% 		  {ok, #monitor_info{objects = Set}} -> Set;
-%%% 		  error -> sets:new()
-%%% 	      end,
-%%%     Objects1 = sets:add_element(Object, Objects),
-%%%     Refs = dict:store(Ref, #monitor_info{pid = Pid, objects = Objects1},
-%%% 		          St#state.refs),
-%%%     Monitor = {Pid, Ref},
-%%%     monitor_path(Object, Monitor, St#state{refs = Refs}).
-    St.
-
-autodemonitor(_Path, _Pid, _Ref, St) ->
-    %% FIXME:
-    St.
-
+autodemonitor(Path, Pid, Ref, St) ->
+    ?debugFmt("autodemonitoring ~s",[Path]),
+%%%     Files = case dict:find(Path, St#state.dirs) of
+%%% 		{ok, Entry} ->
+%%% 		    Monitor = {Pid, Ref},
+%%% 		    case sets:is_element(Monitor, Entry#entry.monitors) of
+%%% 			true -> Entry#entry.files;
+%%% 			false -> []
+%%% 		    end;
+%%% 		error -> []
+%%% 	    end,
+    
+    %% FIXME: recursive demonitoring
+    %% check files/dirs for path prefixes
+    St1 = try demonitor_path(Pid, Ref, {file, Path}, St) 
+	  catch
+	      not_owner -> St
+	  end,
+    try demonitor_path(Pid, Ref, {directory, Path}, St1)
+    catch
+	not_owner -> St1
+    end.
 
 %% client monitoring (once a client, always a client - until death)
 
@@ -376,7 +424,7 @@ add_monitor(Object, Pid, Ref, St) ->
     NewObjects = sets:add_element(Object, Info#monitor_info.objects),
     Refs = dict:store(Ref, Info#monitor_info{objects = NewObjects},
 		      St#state.refs),
-    monitor_path(Object, {Pid, Ref}, St#state{refs = Refs}).
+    monitor_path(Object, Pid, Ref, St#state{refs = Refs}).
 
 %% We must separate the namespaces for files and dirs; there may be
 %% simultaneous file and directory monitors for the same path, and a
@@ -384,16 +432,17 @@ add_monitor(Object, Pid, Ref, St) ->
 %% vice versa. The client should know (more or less) if a path is
 %% expected to refer to a file or a directory.
 
-monitor_path({file, Path}, Monitor, St) ->
-    St#state{files = monitor_path(Path, Monitor, file, St#state.files)};
-monitor_path({directory, Path}, Monitor, St) ->
-    St#state{dirs = monitor_path(Path, Monitor, directory, St#state.dirs)}.
+monitor_path({file, Path}, Pid, Ref, St) ->
+    St#state{files = monitor_path(Path, Pid, Ref, file, St#state.files)};
+monitor_path({directory, Path}, Pid, Ref, St) ->
+    St#state{dirs = monitor_path(Path, Pid, Ref, directory, St#state.dirs)}.
 
 %% Adding a new monitor forces an immediate poll of the path, such that
 %% previous monitors only see any real change, while the new monitor
-%% either gets {exists, ...} or {error, ...}.
+%% either gets {found, ...} or {error, ...}.
 
-monitor_path(Path, Monitor, Type, Dict) ->
+monitor_path(Path, Pid, Ref, Type, Dict) ->
+    Monitor = {Pid, Ref},
     Entry = case dict:find(Path, Dict) of
 		{ok, OldEntry} -> poll_file(Path, OldEntry, Type);
 		error -> new_entry(Path, Type)
@@ -410,26 +459,46 @@ dummy_entry(Entry, Monitor) ->
 new_entry(Path, Type) ->
     refresh_entry(Path, #entry{monitors = sets:new()}, Type).
 
-%% deleting a monitor by reference
+%% Deleting a monitor by reference; throws not_owner if the monitor
+%% reference is owned by another Pid.
 
-delete_monitor(Ref, St) ->
+delete_monitor(Pid, Ref, St) ->
     case dict:find(Ref, St#state.refs) of
-	{ok, #monitor_info{objects = Objects}} ->
+	{ok, #monitor_info{pid = Pid, objects = Objects}} ->
 	    sets:fold(fun (Object, St0) ->
-			      demonitor_path(Ref, Object, St0)
+			      purge_monitor_path(Ref, Object, St0)
 		      end,
 		      St#state{refs = dict:erase(Ref, St#state.refs)},
 		      Objects);
+	{ok, #monitor_info{}} -> throw(not_owner);
 	error ->
 	    St
     end.
 
-demonitor_path(Ref, {file, Path}, St) ->
-    St#state{files = demonitor_path_1(Path, Ref, St#state.files)};
-demonitor_path(Ref, {directory, Path}, St) ->
-    St#state{dirs = demonitor_path_1(Path, Ref, St#state.dirs)}.
+%% Deleting a particular path from a monitor. Throws not_owner if the
+%% monitor reference is owned by another Pid.
 
-demonitor_path_1(Path, Ref, Dict) ->
+demonitor_path(Pid, Ref, Object, St) ->
+    case dict:find(Ref, St#state.refs) of
+	{ok, #monitor_info{pid = Pid, objects = Objects}=I} ->
+	    St1 = purge_monitor_path(Ref, Object, St),
+	    I1 = I#monitor_info{objects=sets:del_element(Object, Objects)},
+	    St1#state{refs = dict:store(Ref, I1, St1#state.refs)};
+	{ok, #monitor_info{}} -> throw(not_owner);
+	error ->
+	    St
+    end.
+
+%% Deleting a particular monitor from a path. Note that all monitors
+%% with the given reference (but possibly different pids) will be
+%% deleted, such as the server pid entry for automonitored paths.
+
+purge_monitor_path(Ref, {file, Path}, St) ->
+    St#state{files = purge_monitor_path_1(Path, Ref, St#state.files)};
+purge_monitor_path(Ref, {directory, Path}, St) ->
+    St#state{dirs = purge_monitor_path_1(Path, Ref, St#state.dirs)}.
+
+purge_monitor_path_1(Path, Ref, Dict) ->
     case dict:find(Path, Dict) of
 	{ok, Entry} -> 
 	    purge_empty_sets(
@@ -483,10 +552,10 @@ purge_empty_sets(Dict) ->
 
 %% Generating events upon state changes by comparing old and new states
 %% 
-%% Message formats:
-%%   {exists, Path, Type, #file_info{}, Files}
+%% Event formats:
+%%   {found, Path, Type, #file_info{}, Files}
 %%   {changed, Path, Type, #file_info{}, Files}
-%%   {error, Path, Type, Info}
+%%   {error, Path, Type, PosixAtom}
 %%
 %% Type is file or directory, as specified by the monitor type, not by
 %% the actual type on disk. If Type is file, Files is always []. If Type
@@ -494,17 +563,13 @@ purge_empty_sets(Dict) ->
 %% FileName}, where FileName is on basename form, i.e., without any
 %% directory component.
 %%
-%% When a new monitor is installed for a path, an initial {exists,...}
-%% or {error,...} message will be sent to the monitor owner.
+%% When a new monitor is installed for a path, an initial {found,...}
+%% or {error,...} event will be sent to the monitor owner.
 %%
 %% Subsequent events will be either {changed,...} or {error,...}.
 %%
 %% The monitor reference is not included in the event descriptor itself,
 %% but is part of the main message format; see cast/2.
-
-%% TODO: report changes of file type as a delete plus an add??
-%% (note that we don't see type changes of unmonitored directory entries)
-%% perhaps report as an enoent followed by a change? is this useful??
 
 event(#entry{info = Info}, #entry{info = Info}, _Type, _Path) ->
     %% no change in state (note that we never compare directory entry
@@ -515,25 +580,26 @@ event(#entry{info = undefined}, #entry{info = NewInfo}=Entry,
       Type, Path)
   when not is_atom(NewInfo) ->
     %% file or directory exists, for a fresh monitor
-    Files = [{added, F} || F <- Entry#entry.files],
-    cast({exists, Path, Type, NewInfo, Files}, Entry#entry.monitors);
+    Files = diff_lists(Entry#entry.files, []),
+    cast({found, Path, Type, NewInfo, Files}, Entry#entry.monitors);
 event(_OldEntry, #entry{info = NewInfo}=Entry, Type, Path)
   when is_atom(NewInfo) ->
-    %% file is not available
+    %% file or directory is not available
     cast({error, Path, Type, NewInfo}, Entry#entry.monitors);
-event(_OldEntry, #entry{info = Info}=Entry, file, Path) ->
-    %% a normal file has changed or simply become accessible
-    cast({changed, Path, file, Info, []}, Entry#entry.monitors);
-event(#entry{info = OldInfo}, #entry{info = NewInfo}=Entry, directory, Path)
-  when is_atom(OldInfo) ->
-    %% a directory has become accessible
-    Files = [{added, F} || F <- Entry#entry.files],
-    cast({changed, Path, directory, NewInfo, Files}, Entry#entry.monitors);
-event(OldEntry, #entry{info = Info}=Entry, directory, Path) ->
-    %% a directory has changed
+event(OldEntry, #entry{info = Info}=Entry, Type, Path) ->
+    %% a file or directory has changed or become readable again after an error
+    type_change_event(OldEntry#entry.info, Info, Type, Path, Entry),
     Files = diff_lists(Entry#entry.files, OldEntry#entry.files),
-    cast({changed, Path, directory, Info, Files}, Entry#entry.monitors).
+    cast({changed, Path, Type, Info, Files}, Entry#entry.monitors).
 
+%% sudden changes in file type cause an 'enoent' error report before the
+%% new status, so that clients do not need to detect this themselves
+type_change_event(#file_info{type = T}, #file_info{type = T}, _, _, _) ->
+    ok;
+type_change_event(#file_info{}, #file_info{}, MonitorType, Path, Entry) ->
+    cast({error, Path, MonitorType, enoent}, Entry#entry.monitors);
+type_change_event(_, _, _, _, _) ->
+    ok.
 
 poll(St) ->
     St#state{files = dict:map(fun (Path, Entry) ->

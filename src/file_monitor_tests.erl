@@ -69,22 +69,28 @@ flatten_path_test(Server) ->
 		 ?SERVER:monitor_dir(Server, Path, [])).
 
 no_file_test(Server) ->
-    Path = "/tmp/nonexisting",
+    monitor_no_file(Server, "/tmp/nonexisting").
+    
+monitor_no_file(Server, Path) ->
     {ok, Ref, Path} = ?SERVER:monitor_file(Server, Path, []),
     receive
 	Msg ->
 	    ?assertMatch({?MSGTAG, Ref, {error, Path, file, enoent}},
 			 Msg)
-    end.
+    end,
+    Ref.
 
 no_dir_test(Server) ->
-    Path = "/tmp/nonexisting",
+    monitor_no_dir(Server, "/tmp/nonexisting").
+
+monitor_no_dir(Server, Path) ->
     {ok, Ref, Path} = ?SERVER:monitor_dir(Server, Path, []),
     receive
 	Msg ->
 	    ?assertMatch({?MSGTAG, Ref, {error, Path, directory, enoent}},
 			 Msg)
-    end.
+    end,
+    Ref.
 
 existing_dir_test(Server) ->
     Path = "/etc",
@@ -93,7 +99,7 @@ existing_dir_test(Server) ->
 	Msg ->
 	    %% we should get a nonempty list of directory entries
 	    ?assertMatch({?MSGTAG, Ref,
-			  {exists, Path, directory, #file_info{}, Es}}
+			  {found, Path, directory, #file_info{}, Es}}
 			 when (is_list(Es) and (Es =/= [])), Msg)
     end.
 
@@ -103,7 +109,7 @@ existing_file_test(Server) ->
     receive
 	Msg ->
 	    ?assertMatch({?MSGTAG, Ref,
-			  {exists, Path, file, #file_info{}, []}}, Msg)
+			  {found, Path, file, #file_info{}, []}}, Msg)
     end.
 
 notdir_test(Server) ->
@@ -123,7 +129,7 @@ dir_as_file_test(Server) ->
 	    %% we should get an empty list of directory entries,
 	    %% since we are just monitoring it as a file
 	    ?assertMatch({?MSGTAG, Ref,
-			  {exists, Path, file, #file_info{}, []}}, Msg)
+			  {found, Path, file, #file_info{}, []}}, Msg)
     end.
 
 %% File event tests: this runs the server over a group of tests
@@ -138,28 +144,48 @@ file_event_test_() ->
 		      fun () ->
 			      Path = "/tmp/filemonitortestfile",
 			      remove_file(Path),
-			      {ok, Ref, Path} =
-				  ?SERVER:monitor_file(Server, Path, []),
-			      receive
-				  Msg ->
-				      ?assertMatch({?MSGTAG, Ref,
-						    {error, Path,
-						     file, enoent}},
-						   Msg)
-			      end,
-			      {Path, Ref}
+			      Ref = monitor_no_file(Server, Path),
+			      {Server, Path, Ref}
 		      end,
-		      {with,
-		       [fun create_file_subtest/1,
-			fun delete_file_subtest/1,
-			fun create_file_subtest/1,
-			fun delete_file_subtest/1,
-			fun create_file_subtest/1,
- 			fun touch_file_subtest/1,
- 			fun touch_file_subtest/1,
- 			fun touch_file_subtest/1,
-			fun delete_file_subtest/1
-		       ]}
+		      fun ({_, Path, _}) -> remove_file(Path) end,
+		      fun ({Server, Path0, Ref}=X) ->
+			      [{with, X,
+				[fun create_file_subtest/1,
+				 fun delete_file_subtest/1,
+				 fun create_file_subtest/1,
+				 fun delete_file_subtest/1,
+				 fun create_file_subtest/1,
+				 fun touch_file_subtest/1,
+				 fun touch_file_subtest/1,
+				 fun touch_file_subtest/1,
+				 fun change_file_type_subtest/1]
+			       },
+			       {setup, local,
+				fun () ->
+					{Path0 ++ "2", Path0 ++ "3"}
+				end,
+				fun ({Path2, Path3}) ->
+				        catch remove_file(Path2),
+					catch remove_file(Path3)
+				end,
+				fun ({Path2, Path3}) ->
+					{with, {Server, Ref, Path2, Path3},
+					 [fun add_monitor2_subtest/1,
+					  fun add_monitor3_subtest/1,
+					  fun create_file2_subtest/1,
+					  fun create_file3_subtest/1,
+					  fun touch_file2_subtest/1,
+					  fun touch_file3_subtest/1,
+					  fun delete_file2_subtest/1,
+					  fun delete_file3_subtest/1,
+					  fun remove_monitor2_subtest/1,
+					  fun remove_monitor3_subtest/1]}
+				end},
+			       {with, X,
+				[fun touch_file_subtest/1,
+				 fun delete_file_subtest/1]
+			       }]
+		      end
 		     }
 	     end
 	    };
@@ -167,7 +193,7 @@ file_event_test_() ->
 	    []
     end.
 
-create_file_subtest({Path, Ref}) ->
+create_file_subtest({_, Path, Ref}) ->
     assert_empty_mailbox(),
     write_file(Path),
     receive
@@ -177,7 +203,7 @@ create_file_subtest({Path, Ref}) ->
 			   #file_info{type=regular}, []}}, Msg)
     end.
 
-delete_file_subtest({Path, Ref}) ->
+delete_file_subtest({_, Path, Ref}) ->
     assert_empty_mailbox(),
     remove_file(Path),
     receive
@@ -186,7 +212,7 @@ delete_file_subtest({Path, Ref}) ->
 			  {error, Path, file, enoent}}, Msg)
     end.
 
-touch_file_subtest({Path, Ref}) ->
+touch_file_subtest({_, Path, Ref}) ->
     assert_empty_mailbox(),
     touch_file(Path),
     receive
@@ -196,6 +222,86 @@ touch_file_subtest({Path, Ref}) ->
 			   #file_info{type=regular}, []}}, Msg)
     end.
 
+change_file_type_subtest({_, Path, Ref}) ->
+    assert_empty_mailbox(),
+    remove_file(Path),
+    try
+	make_dir(Path),
+	receive
+	    Msg1 ->
+		?assertMatch({?MSGTAG, Ref,
+			      {error, Path, file, enoent}}, Msg1)
+	end,
+	receive
+	    Msg2 ->
+		?assertMatch({?MSGTAG, Ref,
+			      {changed, Path, file, #file_info{type=directory},
+			       []}}, Msg2)
+	end,
+	remove_dir(Path),
+	write_file(Path),
+	receive
+	    Msg3 ->
+		?assertMatch({?MSGTAG, Ref,
+			      {error, Path, file, enoent}}, Msg3)
+	end,
+	receive
+	    Msg4 ->
+		?assertMatch({?MSGTAG, Ref,
+			      {changed, Path, file, #file_info{type=regular},
+			       []}}, Msg4)
+	end
+    after
+	catch remove_dir(Path),
+        catch remove_file(Path),
+	write_file(Path)
+    end.
+
+add_monitor2_subtest({Server, Ref, Path2, _}) ->
+    add_monitor_subtest_1(Server, Ref, Path2).
+
+add_monitor3_subtest({Server, Ref, _, Path3}) ->
+    add_monitor_subtest_1(Server, Ref, Path3).
+
+add_monitor_subtest_1(Server, Ref, Path) ->
+    assert_empty_mailbox(),
+    {ok, Ref, Path} = ?SERVER:monitor_file(Server, Path,
+					   [{reference, Ref}]),
+    receive
+	Msg ->
+	    ?assertMatch({?MSGTAG, Ref, {error, Path, file, enoent}},
+			 Msg)
+    end.
+
+create_file2_subtest({Server, Ref, Path2, _}) ->
+    create_file_subtest({Server, Path2, Ref}).
+
+create_file3_subtest({Server, Ref, _, Path3}) ->
+    create_file_subtest({Server, Path3, Ref}).
+
+touch_file2_subtest({Server, Ref, Path2, _}) ->
+    touch_file_subtest({Server, Path2, Ref}).
+
+touch_file3_subtest({Server, Ref, _, Path3}) ->
+    touch_file_subtest({Server, Path3, Ref}).
+
+delete_file2_subtest({Server, Ref, Path2, _}) ->
+    delete_file_subtest({Server, Path2, Ref}).
+
+delete_file3_subtest({Server, Ref, _, Path3}) ->
+    delete_file_subtest({Server, Path3, Ref}).
+
+remove_monitor2_subtest({Server, Ref, Path2, _}) ->
+    remove_monitor_subtest_1(Server, Ref, Path2).
+
+remove_monitor3_subtest({Server, Ref, _, Path3}) ->
+    remove_monitor_subtest_1(Server, Ref, Path3).
+
+remove_monitor_subtest_1(Server, Ref, Path) ->
+    ?assertMatch(ok, ?SERVER:demonitor_file(Server, Path, Ref)),
+    touch_file(Path),
+    wait(500),
+    assert_empty_mailbox().
 
 %% Directory event tests: this runs the server over a group of tests
 directory_event_test_() ->
@@ -209,15 +315,7 @@ directory_event_test_() ->
 		      fun () ->
 			      Path = "/tmp/filemonitortestdir",
 			      recursive_remove(Path),
-			      {ok, Ref, Path} =
-				  ?SERVER:monitor_dir(Server, Path, []),
-			      receive
-				  Msg ->
-				      ?assertMatch({?MSGTAG, Ref,
-						    {error, Path,
-						     directory, enoent}},
-						   Msg)
-			      end,
+			      Ref = monitor_no_dir(Server, Path),
 			      {Path, Ref}
 		      end,
 		      {with,
@@ -326,6 +424,9 @@ new_test_server() ->
 
 stop_test_server(Server) ->
     ?SERVER:stop(Server).
+
+wait(Millis) ->
+    receive after Millis -> ok end.
 
 assert_empty_mailbox() ->
     receive MsgX -> throw({unexpected_message, MsgX})

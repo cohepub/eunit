@@ -154,12 +154,12 @@ server_command(From, {watch, {module, M}, Opts}, St) ->
     server_command_reply(From, ok),
     server(monitor_module(M, Opts, St)).
 
-file_event({exists, Path, dir, _Info, Files}, St) ->
-    %%erlang:display({autoload_saw_exists, dir, Path}),
+file_event({found, Path, dir, _Info, Files}, St) ->
+    %%erlang:display({autoload_saw_found, dir, Path}),
     server(monitor_objs(Path, Files, St));
-file_event({exists, Path, file, Info, _}, St) ->
-    %%erlang:display({autoload_saw_exists, file, Path}),
-    %% treat file-exists messages just like file-changed messages
+file_event({found, Path, file, Info, _}, St) ->
+    %%erlang:display({autoload_saw_found, file, Path}),
+    %% treat file-found messages just like file-changed messages
     server(changed_file(Path, Info#file_info.mtime, St));
 file_event({changed, Path, dir, _Info, Files}, St) ->
     %%erlang:display({autoload_saw_changed, dir, Path}),
