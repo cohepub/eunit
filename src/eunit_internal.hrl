@@ -1,7 +1,7 @@
 %%%-------------------------------------------------------------------
 %% File: eunit_internal.hrl
 %%
-%% $Id:$ 
+%% $Id$ 
 %%
 %% @author Richard Carlsson <richardc@it.uu.se>
 %% @copyright 2006 Richard Carlsson
@@ -31,8 +31,7 @@
 -record(test, {f = undefined,
 	       desc = undefined,
 	       timeout = undefined,
-	       module = undefined,
-	       name = undefined,
+	       location = undefined,
 	       line = 0
 	      }).
 

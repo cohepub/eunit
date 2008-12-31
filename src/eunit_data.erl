@@ -97,6 +97,7 @@
 %%
 %% @type moduleName() = atom()
 %% @type functionName() = atom()
+%% @type arity() = integer()
 %% @type appName() = atom()
 %% @type fileName() = string()
 
@@ -382,7 +383,8 @@ parse({with, X, As}=T) when is_list(As) ->
     case As of
 	[A | As1] ->
 	    check_arity(A, 1, T),
-	    {data, [fun () -> A(X) end, {with, X, As1}]};
+	    {data, [{eunit_lib:fun_parent(A), fun () -> A(X) end},
+		    {with, X, As1}]};
 	[] ->
 	    {data, []}
     end;
@@ -417,15 +419,16 @@ parse(T) ->
 
 parse_simple({L, F}) when is_integer(L), L >= 0 ->
     (parse_simple(F))#test{line = L};
+parse_simple({{M,N,A}=Loc, F}) when is_atom(M), is_atom(N), is_integer(A) ->
+    (parse_simple(F))#test{location = Loc};
 parse_simple(F) ->
     parse_function(F).
 
 parse_function(F) when is_function(F) ->
     check_arity(F, 0, F),
-    {module, M} = erlang:fun_info(F, module),
-    #test{f = F, module = M, name = eunit_lib:fun_parent(F)};
+    #test{f = F, location = eunit_lib:fun_parent(F)};
 parse_function({M,F}) when is_atom(M), is_atom(F) ->
-    #test{f = eunit_test:function_wrapper(M, F), module = M, name = F};
+    #test{f = eunit_test:function_wrapper(M, F), location = {M, F, 0}};
 parse_function(F) ->
     bad_test(F).
 
@@ -677,12 +680,11 @@ enter_context(#context{setup = S, cleanup = C, process = P}, I, F) ->
 %% Returns a symbolic listing of a set of tests
 %%
 %% @type testInfoList() = [Entry]
-%%   Entry = {item, testId(), Description, testName()}
+%%   Entry = {item, testId(), Description, testLoc()}
 %%         | {group, testId(), Description, testInfoList}
 %%   Description = string()
 %% @type testId() = [integer()]
-%% @type testName() = {moduleName(), functionName()}
-%%		    | {moduleName(), functionName(), lineNumber()}
+%% @type testLoc() = {{moduleName(),functionName(),arity()}, lineNumber()}
 %% @type lineNumber() = integer().  Proper line numbers are always >= 1.
 %%
 %% @throws {bad_test, term()}
@@ -706,11 +708,8 @@ list_loop(I) ->
 	    Id = iter_id(I1),
  	    case T of
 		#test{} ->
-		    Name = case T#test.line of
-			       0 -> {T#test.module, T#test.name};
-			       Line -> {T#test.module, T#test.name, Line}
-			   end,
-		    [{item, Id, desc_string(T#test.desc), Name}
+		    Loc = {T#test.location, T#test.line},
+		    [{item, Id, desc_string(T#test.desc), Loc}
 		     | list_loop(I1)];
 		#group{context = Context} ->
 		    [{group, Id, desc_string(T#group.desc),

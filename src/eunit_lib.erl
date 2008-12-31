@@ -310,22 +310,25 @@ split_node_2(As, Cs) ->
 %% ---------------------------------------------------------------------
 %% Get the name of the containing function for a fun. (This is encoded
 %% in the name of the generated function that implements the fun.)
-
 fun_parent(F) ->
+    {module, M} = erlang:fun_info(F, module),
     {name, N} = erlang:fun_info(F, name),
     case erlang:fun_info(F, type) of
 	{type, external} ->
-	    N;
+	    {arity, A} = erlang:fun_info(F, arity),
+	    {M, N, A};
 	{type, local} ->
-	    S = atom_to_list(N),
-	    list_to_atom(string:sub_string(S, 2, string:chr(S, $/) - 1))
+	    [$-|S] = atom_to_list(N),
+	    C1 = string:chr(S, $/),
+	    C2 = string:chr(S, $-),
+	    {M, list_to_atom(string:sub_string(S, 1, C1 - 1)),
+	     list_to_integer(string:sub_string(S, C1 + 1, C2 - 1))}
     end.
 
 -ifdef(TEST).
 fun_parent_test() ->
-    fun_parent_test = fun_parent(fun () -> ok end).
+    {?MODULE,fun_parent_test,0} = fun_parent(fun () -> ok end).
 -endif.
-
 
 %% ---------------------------------------------------------------------
 %% Ye olde uniq function

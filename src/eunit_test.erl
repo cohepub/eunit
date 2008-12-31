@@ -43,6 +43,8 @@ get_stacktrace() ->
 get_stacktrace(Ts) ->
     eunit_lib:uniq(prune_trace(erlang:get_stacktrace(), Ts)).
 
+prune_trace([{eunit_data, _, _} | Rest], Tail) ->
+    prune_trace(Rest, Tail);
 prune_trace([{?MODULE, _, _} | _Rest], Tail) ->
     Tail;
 prune_trace([T | Ts], Tail) ->

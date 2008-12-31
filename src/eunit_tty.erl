@@ -100,8 +100,8 @@ wait(Id, St) ->
 	{status, Id, Data} -> {Data, St}
     end.
 
-entry({item, Id, Desc, Test}, St) ->
-    test_begin(Id, Desc, Test, St);
+entry({item, Id, Desc, Loc}, St) ->
+    test_begin(Id, Desc, Loc, St);
 entry({group, Id, Desc, Es}, St) ->
     group_begin(Id, Desc, Es, St).
 
@@ -110,10 +110,8 @@ tests([E | Es], St) ->
 tests([], St) ->
     St.
 
-test_begin(Id, Desc, {Module, Name}, St) ->
-    test_begin(Id, Desc, {Module, Name, 0}, St);
-test_begin(Id, Desc, {Module, Name, Line}, St) ->
-    Text = format_test_begin(Module, Name, Line, Desc),
+test_begin(Id, Desc, {{Module, Name, Arity}, Line}, St) ->
+    Text = format_test_begin(Module, Name, Arity, Line, Desc),
     if St#state.verbose -> print_test_begin(St#state.indent, Text);
        true -> ok
     end,
@@ -216,14 +214,14 @@ print_group_end(I, Time) ->
 	    ok
     end.
 
-format_test_begin(Module, Name, Line, Desc) ->
+format_test_begin(Module, Name, _Arity, Line, Desc) ->
     L = if Line =:= 0 -> "";
 	   true -> io_lib:fwrite("~w:", [Line])
 	end,
     D = if Desc =:= "" -> "";
 	   true -> io_lib:fwrite(" (~s)", [Desc])
 	end,
-    io_lib:fwrite("~s:~s~s~s...", [Module, L, Name, D]).
+    io_lib:fwrite("~s:~s ~s~s...", [Module, L, Name, D]).
 
 print_test_begin(I, Text) ->
     indent(I),
