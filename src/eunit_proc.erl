@@ -60,7 +60,7 @@ start(Tests, Order, Super, Reference)
 %%   {progress, 'begin', test | group}
 %%       indicates that the item has been entered, and what type it is
 %%
-%%   {progress, 'end', {Status, Time::integer(), Output::io_list()}}
+%%   {progress, 'end', {Status, Time::integer(), Output::binary()}}
 %%       Status = 'ok' | {error, Exception} | {skipped, Cause}
 %%
 %%       where Time is measured in milliseconds and Output is the data
@@ -226,7 +226,7 @@ insulator_wait(Child, Parent, Buf, St) ->
 	    status_message(Id, {progress, 'begin', Class}, St),
 	    insulator_wait(Child, Parent, [[] | Buf], St);
 	{progress, Child, Id, 'end', {Status, Time}} ->
-	    Msg = {Status, Time, lists:reverse(hd(Buf))},
+	    Msg = {Status, Time, list_to_binary(lists:reverse(hd(Buf)))},
 	    status_message(Id, {progress, 'end', Msg}, St),
 	    insulator_wait(Child, Parent, tl(Buf), St);
 	{cancel, Child, Id, Reason} ->

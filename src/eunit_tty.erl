@@ -130,7 +130,7 @@ test_begin(Id, Desc, {{Module, Name, Arity}, Line}, St) ->
 
 test_end(Id, Text, St) ->
     case wait(Id, St) of
-	{{progress, 'end', {Result, Time, _Output}}, St1} ->
+	{{progress, 'end', {Result, Time, Output}}, St1} ->
 	    if Result =:= ok ->
 		    if St#state.verbose -> print_test_end(Time);
 		       true -> ok
@@ -140,7 +140,7 @@ test_end(Id, Text, St) ->
 		    if St#state.verbose -> ok;
 		       true -> print_test_begin(St#state.indent, Text)
 		    end,
-		    print_test_error(Result),
+		    print_test_error(Result, Output),
 		    St1#state{fail = St1#state.fail + 1}
 	    end;
 	{{cancel, Reason}, St1} ->
@@ -233,11 +233,19 @@ print_test_end(Time) ->
 	end,
     io:fwrite("~sok\n", [T]).
 
-print_test_error({error, Exception}) ->
-    io:fwrite("*failed*\n::~s\n\n",
-	      [eunit_lib:format_exception(Exception)]);
-print_test_error({skipped, Reason}) ->
-    io:fwrite("*did not run*\n::~s\n\n",
+print_test_error({error, Exception}, Output) ->
+    io:fwrite("*failed*\n::~s",
+	      [eunit_lib:format_exception(Exception)]),
+    case Output of
+	<<>> ->
+	    io:put_chars("\n\n");
+	<<Text:800/binary, _:1/binary, _/binary>> ->
+	    io:fwrite("  output:<<\"~s\">>...\n\n", [Text]);
+	_ ->
+	    io:fwrite("  output:<<\"~s\">>\n\n", [Output])
+    end;
+print_test_error({skipped, Reason}, _) ->
+    io:fwrite("*did not run*\n::~s\n",
 	      [format_skipped(Reason)]).
 
 format_skipped({module_not_found, M}) ->
