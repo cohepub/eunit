@@ -322,17 +322,14 @@ with_timeout(Time, F, St) when is_integer(Time) ->
 	clear_timeout(Ref)
     end.
 
-%% The normal behaviour of a child process is to trap exit signals. This
-%% makes it easier to write tests that spawn off separate (linked)
-%% processes and test whether they terminate as expected. The testing
-%% framework is not dependent on this, however, so the test code is
-%% allowed to disable signal trapping as it pleases.
+%% The normal behaviour of a child process is not to trap exit
+%% signals.The testing framework is not dependent on this, however, so
+%% the test code is allowed to enable signal trapping as it pleases.
 %% Note that I/O is redirected to the insulator process.
 
 %% @spec (() -> term(), #procstate{}) -> ok
 
 child_process(Fun, St) ->
-    process_flag(trap_exit, true),
     group_leader(St#procstate.insulator, self()),
     try Fun() of
 	_ -> ok
@@ -344,6 +341,12 @@ child_process(Fun, St) ->
 	    abort_message(Cause, St),
 	    exit(aborted)
     end.
+
+-ifdef(TEST).
+child_test_() ->
+    [{"test processes do not trap exit signals",
+      ?_assertMatch(false, process_flag(trap_exit, false))}].
+-endif.
 
 %% @throws abortException()
 %% @type abortException() = {abort, Cause::term()}
@@ -383,7 +386,6 @@ wait_for_tasks(PidSet, St) ->
 		    wait_for_tasks(Rest, St)
 	    end
     end.
-
 
 %% ---------------------------------------------------------------------
 %% Separate testing process
