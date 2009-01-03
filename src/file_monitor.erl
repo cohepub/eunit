@@ -244,7 +244,7 @@ handle_call({demonitor, Pid, Object, Ref}, _From, St) when is_reference(Ref) ->
 handle_call({automonitor, Pid, Path}, _From, St) when is_pid(Pid) ->
     Ref = make_ref(),
     St1 = register_client(Pid, Ref, St),
-    {reply, {ok, Ref}, automonitor(Path, Pid, Ref, St1)};
+    {reply, {ok, Ref}, automonitor_path(Path, Pid, Ref, St1)};
 handle_call(get_poll_time, _From, St) ->
     {reply, St#state.poll_time, St};
 handle_call({set_poll_time, Time}, _From, St) ->
@@ -330,26 +330,26 @@ autoevent({Tag, Path, Type, #file_info{}=Info, _Files}, Pid, Ref, St)
 (((Type =:= file) and (Info#file_info.type =:= directory)) orelse
  ((Type =:= directory) and (Info#file_info.type =/= directory))) ->
     %% monitor type mismatch detected - recreate it to get correct type
-    automonitor(Path, Pid, Ref, autodemonitor(Path, Pid, Ref, St));
+    automonitor_path(Path, Pid, Ref, autodemonitor_path(Path, Pid, Ref, St));
 autoevent({Tag, Path, directory, #file_info{}=Info, Files}, Pid, Ref, St0)
   when ((Tag =:= found) or (Tag =:= changed)),
 Info#file_info.type =:= directory ->
     %% add/remove automonitoring to/from all added/deleted entries
     lists:foldl(fun ({added, File}, St) ->
-			automonitor(filename:join(Path, File),
+			automonitor_path(filename:join(Path, File),
 				    Pid, Ref, St);
 		    ({deleted, File}, St) ->
-			autodemonitor(filename:join(Path, File),
-				      Pid, Ref, St)
+			autodemonitor_path(filename:join(Path, File),
+					   Pid, Ref, St)
 		end,
 		St0, Files);
-autoevent({error, _Path, directory, _}, _Pid, _Ref, St) ->
+autoevent({error, Path, directory, _}, Pid, Ref, St) ->
     %% only demonitor subdirectories/files
-    St; %%autodemonitor(Path, Pid, Ref, St);
+    autodemonitor_subpaths(Path, Pid, Ref, St);
 autoevent(_Event, _Pid, _Ref, St) ->
     St.
 
-automonitor(Path, Pid, Ref, St) ->
+automonitor_path(Path, Pid, Ref, St) ->
     %% Pid should be a known client, otherwise do nothing
     case dict:is_key(Pid, St#state.clients) of
 	true ->
@@ -366,28 +366,42 @@ automonitor(Path, Pid, Ref, St) ->
 	    St
     end.
 
-autodemonitor(Path, Pid, Ref, St) ->
+%% This solution is quadratic (at least) for now. We need a better data
+%% representation to make this fast.
+autodemonitor_path(Path, Pid, Ref, St0) ->
     ?debugFmt("autodemonitoring ~s",[Path]),
-%%%     Files = case dict:find(Path, St#state.dirs) of
-%%% 		{ok, Entry} ->
-%%% 		    Monitor = {Pid, Ref},
-%%% 		    case sets:is_element(Monitor, Entry#entry.monitors) of
-%%% 			true -> Entry#entry.files;
-%%% 			false -> []
-%%% 		    end;
-%%% 		error -> []
-%%% 	    end,
-    
-    %% FIXME: recursive demonitoring
-    %% check files/dirs for path prefixes
-    St1 = try demonitor_path(Pid, Ref, {file, Path}, St) 
+    St1 = try demonitor_path(Pid, Ref, {file, Path}, St0) 
+ 	  catch
+ 	      not_owner -> St0
+ 	  end,
+    St2 = try demonitor_path(Pid, Ref, {directory, Path}, St1)
 	  catch
-	      not_owner -> St
+	      not_owner -> St1
 	  end,
-    try demonitor_path(Pid, Ref, {directory, Path}, St1)
-    catch
-	not_owner -> St1
+    autodemonitor_subpaths(Path, Pid, Ref, St2).
+
+autodemonitor_subpaths(Path, Pid, Ref, St0) ->
+    case dict:find(Ref, St0#state.refs) of
+	{ok, #monitor_info{pid = Pid, objects = Objects}} ->
+	    Root = filename:split(Path),
+	    sets:fold(fun ({_, P}, St) ->
+			      case proper_prefix(Root, filename:split(P)) of
+				  true ->
+				      autodemonitor_path(P, Pid, Ref, St);
+				  false ->
+				      St
+			      end
+		      end,
+		      St0, Objects);
+	error ->
+	    St0
     end.
+
+proper_prefix([H | T1], [H | T2]) ->
+    proper_prefix(T1, T2);
+proper_prefix([], []) -> false;
+proper_prefix([], _) -> true;
+proper_prefix(_, _) -> false.
 
 %% client monitoring (once a client, always a client - until death)
 
