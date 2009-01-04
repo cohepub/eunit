@@ -53,7 +53,7 @@ basic_test_() ->
 %% All the below tests run only on unix-like platforms
 
 return_value_test(Server) ->
-    Path = "/tmp/nonexisting",  % flat string
+    Path = <<"/tmp/nonexisting">>,  % single binary path
     MonitorResult = ?SERVER:monitor_file(Server, Path, []),
     ?assertMatch({ok, Ref, Path} when is_reference(Ref), MonitorResult),
     {ok, MonitorRef, _} = MonitorResult,
@@ -63,13 +63,13 @@ return_value_test(Server) ->
 
 flatten_path_test(Server) ->
     Path = ["/","tmp","/","foo"],
-    ?assertMatch({ok, _, "/tmp/foo"},
+    ?assertMatch({ok, _, <<"/tmp/foo">>},
 		 ?SERVER:monitor_file(Server, Path, [])),
-    ?assertMatch({ok, _, "/tmp/foo"},
+    ?assertMatch({ok, _, <<"/tmp/foo">>},
 		 ?SERVER:monitor_dir(Server, Path, [])).
 
 no_file_test(Server) ->
-    monitor_no_file(Server, "/tmp/nonexisting").
+    monitor_no_file(Server, <<"/tmp/nonexisting">>).
     
 monitor_no_file(Server, Path) ->
     {ok, Ref, Path} = ?SERVER:monitor_file(Server, Path, []),
@@ -81,7 +81,7 @@ monitor_no_file(Server, Path) ->
     Ref.
 
 no_dir_test(Server) ->
-    monitor_no_dir(Server, "/tmp/nonexisting").
+    monitor_no_dir(Server, <<"/tmp/nonexisting">>).
 
 monitor_no_dir(Server, Path) ->
     {ok, Ref, Path} = ?SERVER:monitor_dir(Server, Path, []),
@@ -93,7 +93,7 @@ monitor_no_dir(Server, Path) ->
     Ref.
 
 existing_dir_test(Server) ->
-    Path = "/etc",
+    Path = <<"/etc">>,
     {ok, Ref, Path} = ?SERVER:monitor_dir(Server, Path, []),
     receive
 	Msg ->
@@ -104,7 +104,7 @@ existing_dir_test(Server) ->
     end.
 
 existing_file_test(Server) ->
-    Path = "/etc/passwd",
+    Path = <<"/etc/passwd">>,
     {ok, Ref, Path} = ?SERVER:monitor_file(Server, Path, []),
     receive
 	Msg ->
@@ -113,7 +113,7 @@ existing_file_test(Server) ->
     end.
 
 notdir_test(Server) ->
-    Path = "/etc/passwd",
+    Path = <<"/etc/passwd">>,
     {ok, Ref, Path} = ?SERVER:monitor_dir(Server, Path, []),
     receive
 	Msg ->
@@ -122,7 +122,7 @@ notdir_test(Server) ->
     end.
 
 dir_as_file_test(Server) ->
-    Path = "/etc",
+    Path = <<"/etc">>,
     {ok, Ref, Path} = ?SERVER:monitor_file(Server, Path, []),
     receive
 	Msg ->
@@ -142,7 +142,7 @@ file_event_test_() ->
 	     fun (Server) ->
 		     {setup, local,
 		      fun () ->
-			      Path = "/tmp/filemonitortestfile",
+			      Path = <<"/tmp/filemonitortestfile">>,
 			      remove_file(Path),
 			      Ref = monitor_no_file(Server, Path),
 			      {Server, Path, Ref}
@@ -162,7 +162,8 @@ file_event_test_() ->
 			       },
 			       {setup, local,
 				fun () ->
-					{Path0 ++ "2", Path0 ++ "3"}
+					{file_monitor:normalize_path([Path0, $2]),
+					 file_monitor:normalize_path([Path0, $3])}
 				end,
 				fun ({Path2, Path3}) ->
 				        catch remove_file(Path2),
@@ -313,7 +314,7 @@ directory_event_test_() ->
 	     fun (Server) ->
 		     {setup, local,
 		      fun () ->
-			      Path = "/tmp/filemonitortestdir",
+			      Path = <<"/tmp/filemonitortestdir">>,
 			      recursive_remove(Path),
 			      Ref = monitor_no_dir(Server, Path),
 			      {Path, Ref}
@@ -359,9 +360,9 @@ delete_empty_dir_subtest({Path, Ref}) ->
     end.
 
 create_subdir_subtest({Path, Ref}) ->
-    Subdir = "subdir",
+    Subdir = <<"subdir">>,
     assert_empty_mailbox(),
-    make_dir(filename:join(Path, Subdir)),
+    make_dir(join(Path, Subdir)),
     receive
 	Msg ->
 	    ?assertMatch({?MSGTAG, Ref,
@@ -371,9 +372,9 @@ create_subdir_subtest({Path, Ref}) ->
     end.
 
 delete_subdir_subtest({Path, Ref}) ->
-    Subdir = "subdir",
+    Subdir = <<"subdir">>,
     assert_empty_mailbox(),
-    remove_dir(filename:join(Path, Subdir)),
+    remove_dir(join(Path, Subdir)),
     receive
 	Msg ->
 	    ?assertMatch({?MSGTAG, Ref,
@@ -383,9 +384,9 @@ delete_subdir_subtest({Path, Ref}) ->
     end.
 
 create_subfile_subtest({Path, Ref}) ->
-    File = "file",
+    File = <<"file">>,
     assert_empty_mailbox(),
-    write_file(filename:join(Path, File)),
+    write_file(join(Path, File)),
     receive
 	Msg ->
 	    ?assertMatch({?MSGTAG, Ref,
@@ -395,9 +396,9 @@ create_subfile_subtest({Path, Ref}) ->
     end.
 
 delete_subfile_subtest({Path, Ref}) ->
-    File = "file",
+    File = <<"file">>,
     assert_empty_mailbox(),
-    remove_file(filename:join(Path, File)),
+    remove_file(join(Path, File)),
     receive
 	Msg ->
 	    ?assertMatch({?MSGTAG, Ref,
@@ -433,6 +434,8 @@ assert_empty_mailbox() ->
     after 0 -> ok
     end.
 
+write_file(Path) when is_binary(Path) ->
+    write_file(binary_to_list(Path));
 write_file(Path) ->
     case file:write_file(Path, <<"this is a test\n">>) of
 	ok -> ok;
@@ -446,6 +449,8 @@ touch_file(Path) ->
     receive after 1100 -> ok end,
     write_file(Path).
 
+remove_file(Path) when is_binary(Path) ->
+    remove_file(binary_to_list(Path));
 remove_file(Path) ->
     case file:delete(Path) of
 	ok -> ok;
@@ -453,6 +458,8 @@ remove_file(Path) ->
 	{error, Err} -> throw({could_not_delete, Err, Path})
     end.
 
+remove_dir(Path) when is_binary(Path) ->
+    remove_dir(binary_to_list(Path));
 remove_dir(Path) ->
     case file:del_dir(Path) of
 	ok -> ok;
@@ -460,11 +467,13 @@ remove_dir(Path) ->
 	{error, Err} -> throw({could_not_delete, Err, Path})
     end.
 
+recursive_remove(Path) when is_binary(Path) ->
+    recursive_remove(binary_to_list(Path));
 recursive_remove(Path) ->
     case file:read_file_info(Path) of
 	{ok, #file_info{type=directory}} ->
 	    lists:foreach(fun (Sub) ->
-				  recursive_remove(filename:join(Path,Sub))
+				  recursive_remove(join(Path, Sub))
 			  end,
 			  list_dir(Path)),
 	    remove_dir(Path);
@@ -472,14 +481,25 @@ recursive_remove(Path) ->
 	    remove_file(Path)
     end.
 
+make_dir(Path) when is_binary(Path) ->
+    make_dir(binary_to_list(Path));
 make_dir(Path) ->
     case file:make_dir(Path) of
 	ok -> ok;
 	{error, Err} -> throw({could_not_make_dir, Err, Path})
     end.    
 
+list_dir(Path) when is_binary(Path) ->
+    list_dir(binary_to_list(Path));
 list_dir(Path) ->
     case file:list_dir(Path) of
-	{ok, Files} -> Files;
+	{ok, Files} -> [list_to_binary(File) || File <- Files];
 	{error, _} -> []
     end.
+
+join(Path, File) when is_binary(Path) ->
+    join(binary_to_list(Path), File);
+join(Path, File) when is_binary(File) ->
+    join(Path, binary_to_list(File));
+join(Path, File)  ->
+    list_to_binary(filename:join(Path, File)).

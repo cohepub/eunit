@@ -29,7 +29,7 @@
 	 automonitor/3, demonitor/1, demonitor/2, demonitor_file/2,
 	 demonitor_file/3, demonitor_dir/2, demonitor_dir/3,
 	 get_poll_time/0, get_poll_time/1, set_poll_time/1,
-	 set_poll_time/2]).
+	 set_poll_time/2, normalize_path/1]).
 
 -export([start/0, start/1, start/2, start_link/0, start_link/1,
 	 start_link/2, stop/0, stop/1]).
@@ -51,7 +51,6 @@
 %% We never rewrite the paths, e.g. from relative to absolute, but we
 %% ensure that every path is a flat string internally, for the sake of
 %% comparisons, and return it to the caller for reference.
-%% TODO: store paths internally as UTF8-encoded binaries
 
 -define(DEFAULT_POLL_TIME, 5000).  % change with option poll_time
 -define(MIN_POLL_TIME, 100).
@@ -108,7 +107,7 @@ monitor_dir(Server, Path, Opts) ->
 
 %% not exported
 monitor(Server, Path, Opts, Type) ->
-    FlatPath = filename:flatten(Path),
+    FlatPath = normalize_path(Path),
     Ref = case proplists:get_value(reference, Opts) of
 	      R when is_reference(R) ; R =:= undefined -> R;
 	      _ -> erlang:error(badarg)
@@ -127,7 +126,7 @@ automonitor(Path, Opts) ->
     automonitor(?SERVER, Path, Opts).
 
 automonitor(Server, Path, _Opts) ->
-    FlatPath = filename:flatten(Path),
+    FlatPath = normalize_path(Path),
     {ok, Ref} = gen_server:call(Server, {automonitor, self(), FlatPath}),
     {ok, Ref, FlatPath}.
 
@@ -152,7 +151,7 @@ demonitor_dir(Server, Path, Ref) ->
 
 %% not exported
 demonitor(Server, Path, Ref, Type) when is_reference(Ref) ->
-    FlatPath = filename:flatten(Path),
+    FlatPath = normalize_path(Path),
     ok = gen_server:call(Server, {demonitor, self(), {Type, FlatPath}, Ref}).
 
 
@@ -290,6 +289,32 @@ terminate(_Reason, _St) ->
 %% Internal functions
 %%
 
+%% We allow paths as binaries, atoms, or "extended io-lists" that may
+%% contain atoms as well as binaries. This is flattened into a single
+%% binary (currently assuming that the input uses an 8-bit encoding).
+%% A single character is not a valid path; it must be within a list.
+
+normalize_path(Path) when is_binary(Path) -> Path;
+normalize_path(Path) ->
+    list_to_binary(flatten_onto(Path, [])).
+
+flatten_onto([X | Xs], As) when is_integer(X), X >= 0, X =< 255 ->
+    [X | flatten_onto(Xs, As)];
+flatten_onto([X | Xs], As) ->
+    flatten_onto(X, flatten_onto(Xs, As));
+flatten_onto([], As) ->
+    As;
+flatten_onto(X, As) when is_atom(X) ->
+    atom_to_list(X) ++ As;
+flatten_onto(X, As) when is_binary(X) ->
+    binary_to_list(X) ++ As;
+flatten_onto(_, _) ->
+    erlang:error(badarg).
+
+join_to_path(Path, File) when is_binary(Path), is_binary(File) ->
+    normalize_path(filename:join(binary_to_list(Path),
+				 binary_to_list(File))).
+
 max(X, Y) when X > Y -> X;
 max(_, Y) -> Y.
 
@@ -346,10 +371,10 @@ autoevent({Tag, Path, directory, #file_info{}=Info, Files}, Pid, Ref, St0)
 Info#file_info.type =:= directory ->
     %% add/remove automonitoring to/from all added/deleted entries
     lists:foldl(fun ({added, File}, St) ->
-			automonitor_path(filename:join(Path, File),
+			automonitor_path(join_to_path(Path, File),
 					 Pid, Ref, St);
 		    ({deleted, File}, St) ->
-			autodemonitor_path(filename:join(Path, File),
+			autodemonitor_path(join_to_path(Path, File),
 					   Pid, Ref, St)
 		end,
 		St0, Files);
@@ -374,7 +399,7 @@ automonitor_path(Path, Pid, Ref, St) ->
 %% see add_monitor for possible thrown exceptions
 unsafe_automonitor_path(Path, Pid, Ref, St) ->
     ?debugFmt("automonitoring ~s",[Path]),
-    Object = case file:read_file_info(Path) of
+    Object = case file:read_file_info(binary_to_list(Path)) of
 		 {ok, #file_info{type=directory}} ->
 		     {directory, Path};
 		 _ ->
@@ -399,9 +424,10 @@ autodemonitor_path(Path, Pid, Ref, St0) ->
 autodemonitor_subpaths(Path, Pid, Ref, St0) ->
     case dict:find(Ref, St0#state.refs) of
 	{ok, #monitor_info{pid = Pid, objects = Objects}} ->
-	    Root = filename:split(Path),
+	    Root = filename:split(binary_to_list(Path)),
 	    sets:fold(fun ({_, P}, St) ->
-			      case proper_prefix(Root, filename:split(P)) of
+			      P1 = filename:split(binary_to_list(P)),
+			      case proper_prefix(Root, P1) of
 				  true ->
 				      autodemonitor_path(P, Pid, Ref, St);
 				  false ->
@@ -635,7 +661,8 @@ poll_file(Path, Entry, Type, St) ->
     event(Entry, NewEntry, Type, Path, St),
     NewEntry.
 
-refresh_entry(Path, Entry, Type) ->
+refresh_entry(Path0, Entry, Type) ->
+    Path = binary_to_list(Path0),
     OldInfo = Entry#entry.info,
     Info = get_file_info(Path),
     case Type of
@@ -663,7 +690,7 @@ refresh_entry(Path, Entry, Type) ->
 %% We clear some fields of the file_info so that we only trigger on real
 %% changes; see the //kernel/file.erl manual and file.hrl for details.
 
-get_file_info(Path) ->
+get_file_info(Path) when is_list(Path) ->
     case file:read_file_info(Path) of
 	{ok, Info} ->
 	    Info#file_info{access = undefined,
@@ -675,9 +702,9 @@ get_file_info(Path) ->
 %% Listing the members of a directory; note that it yields the empty
 %% list if it fails - this is not the place for error detection.
 
-list_dir(Path, Mtime) ->
+list_dir(Path, Mtime) when is_list(Path) ->
     Files = case file:list_dir(Path) of
-		{ok, Fs} -> Fs;
+		{ok, Fs} -> [normalize_path(F) || F <- Fs];
 		{error, _} -> []
 	    end,
     %% The directory access time should now be the time when we read the
