@@ -86,8 +86,6 @@
 %% User interface
 %%
 
-%% TODO: should not allow adding/removing paths manually from automonitor ref
-
 monitor_file(Path) ->
     monitor_file(Path, []).
 
