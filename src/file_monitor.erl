@@ -560,19 +560,16 @@ purge_monitor_path(Ref, {directory, Path}, St) ->
 purge_monitor_path_1(Path, Ref, Dict) ->
     case dict:find(Path, Dict) of
 	{ok, Entry} -> 
-	    purge_empty_sets(
-	      dict:store(Path, purge_monitor_ref(Ref, Entry), Dict));
+	    Monitors = sets:del_element(Ref, Entry#entry.monitors),
+	    case sets:size(Monitors) > 0 of
+		true ->
+		    dict:store(Path, Entry#entry{monitors = Monitors}, Dict);
+		false ->
+		    dict:erase(Path, Dict)
+	    end;
 	error ->
 	    Dict
     end.
-
-purge_monitor_ref(Ref, Entry) ->
-    Entry#entry{monitors = sets:del_element(Ref, Entry#entry.monitors)}.
-
-purge_empty_sets(Dict) ->
-    dict:filter(fun (_Path, Entry) ->
-			sets:size(Entry#entry.monitors) > 0
-		end, Dict).
 
 %% Generating events upon state changes by comparing old and new states
 %% 
