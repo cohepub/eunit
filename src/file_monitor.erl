@@ -59,12 +59,12 @@
 -define(MSGTAG, ?SERVER).
 
 %% @type object() -> {file|directory, filename()}
-%% @type monitor() -> {pid(), reference()}
+%% @type monitor() -> reference()
 
 -record(state, {poll_time,  % polling interval (milliseconds)
 		dirs,       % map: directory path -> #entry{}
 		files,      % map: file path -> #entry{}
-		refs,       % map: monitor Ref -> #monitor_info{}
+		refs,       % map: monitor() -> #monitor_info{}
 		clients     % map: client Pid -> #client_info{}
 	       }).
 
@@ -74,7 +74,7 @@
 	       }).
 
 -record(client_info, {monitor,    % erlang:monitor/2 reference
-		      refs        % file monitor references owned by client
+		      refs        % set(monitor()); monitors owned by client
 		     }).
 
 -record(monitor_info, {pid,     % client Pid
@@ -382,8 +382,7 @@ unsafe_automonitor_path(Path, Pid, Ref, St) ->
 		 _ ->
 		     {file, Path}    % also for errors
 	     end,
-    St1 = add_automonitor(Object, Pid, Ref, St),
-    monitor_path(Object, self(), Ref, St1).
+    add_automonitor(Object, Pid, Ref, St).
 
 %% This solution is quadratic (at least) for now. We need a better data
 %% representation to make this fast.
@@ -429,21 +428,29 @@ register_client(Pid, Ref, St) ->
 	       {ok, OldInfo} -> OldInfo;
 	       error ->
 		   Monitor = erlang:monitor(process, Pid),
-		   #client_info{monitor=Monitor, refs = sets:new()}
+		   #client_info{monitor = Monitor, refs = sets:new()}
 	   end,
     Refs = sets:add_element(Ref, Info#client_info.refs),
     St#state{clients = dict:store(Pid, Info#client_info{refs = Refs},
 				  St#state.clients)}.
 
-remove_client(Pid, St0) ->
-    St = purge_pid(Pid, St0),
+remove_client(Pid, St) ->
     case dict:find(Pid, St#state.clients) of
-	{ok, #client_info{monitor = Ref}} ->
-	    erlang:demonitor(Ref, [flush]),
-	    St#state{clients = dict:erase(Pid, St#state.clients)};
+	{ok, #client_info{monitor = Monitor, refs = Refs}} ->
+	    erlang:demonitor(Monitor, [flush]),
+	    purge_client(Pid, Refs, St);
 	error ->
 	    St
     end.
+
+purge_client(Pid, Refs, St0) ->
+    St1 = sets:fold(fun (Ref, St) ->
+			    %% the Pid *should* be the owner here, so
+			    %% a not_owner exception should not happen
+			    delete_monitor(Pid, Ref, St)
+		    end,
+		    St0, Refs),
+    St1#state{clients = dict:erase(Pid, St1#state.clients)}.
 
 %% Adding a new monitor; throws 'not_owner' if the monitor reference is
 %% already registered for another Pid; throws 'automonitor' if the
@@ -470,7 +477,7 @@ add_monitor(Object, Pid, Ref, St, Auto) ->
     NewObjects = sets:add_element(Object, Info#monitor_info.objects),
     Refs = dict:store(Ref, Info#monitor_info{objects = NewObjects},
 		      St#state.refs),
-    monitor_path(Object, Pid, Ref, St#state{refs = Refs}).
+    monitor_path(Object, Ref, St#state{refs = Refs}).
 
 %% We must separate the namespaces for files and dirs; there may be
 %% simultaneous file and directory monitors for the same path, and a
@@ -478,29 +485,27 @@ add_monitor(Object, Pid, Ref, St, Auto) ->
 %% vice versa. The client should know (more or less) if a path is
 %% expected to refer to a file or a directory.
 
-monitor_path({file, Path}, Pid, Ref, St) ->
-    St#state{files = monitor_path(Path, Pid, Ref, file, St#state.files)};
-monitor_path({directory, Path}, Pid, Ref, St) ->
-    St#state{dirs = monitor_path(Path, Pid, Ref, directory, St#state.dirs)}.
+monitor_path({file, Path}, Ref, St) ->
+    St#state{files = monitor_path(Path, Ref, file, St#state.files, St)};
+monitor_path({directory, Path}, Ref, St) ->
+    St#state{dirs = monitor_path(Path, Ref, directory, St#state.dirs, St)}.
 
 %% Adding a new monitor forces an immediate poll of the path, such that
 %% previous monitors only see any real change, while the new monitor
 %% either gets {found, ...} or {error, ...}.
 
-monitor_path(Path, Pid, Ref, Type, Dict) ->
-    Monitor = {Pid, Ref},
+monitor_path(Path, Ref, Type, Dict, St) ->
     Entry = case dict:find(Path, Dict) of
-		{ok, OldEntry} -> poll_file(Path, OldEntry, Type);
+		{ok, OldEntry} -> poll_file(Path, OldEntry, Type, St);
 		error -> new_entry(Path, Type)
 	    end,
-    event(#entry{}, dummy_entry(Entry, Monitor), Type, Path),
+    event(#entry{}, dummy_entry(Entry, Ref), Type, Path, St),
     NewEntry = Entry#entry{monitors =
-			   sets:add_element(Monitor,
-					    Entry#entry.monitors)},
+			   sets:add_element(Ref, Entry#entry.monitors)},
     dict:store(Path, NewEntry, Dict).
 
-dummy_entry(Entry, Monitor) ->
-    Entry#entry{monitors = sets:add_element(Monitor, sets:new())}.
+dummy_entry(Entry, Ref) ->
+    Entry#entry{monitors = sets:add_element(Ref, sets:new())}.
 
 new_entry(Path, Type) ->
     refresh_entry(Path, #entry{monitors = sets:new()}, Type).
@@ -535,9 +540,7 @@ demonitor_path(Pid, Ref, Object, St) ->
 	    St
     end.
 
-%% Deleting a particular monitor from a path. Note that all monitors
-%% with the given reference (but possibly different pids) will be
-%% deleted, such as the server pid entry for automonitored paths.
+%% Deleting a particular monitor from a path.
 
 purge_monitor_path(Ref, {file, Path}, St) ->
     St#state{files = purge_monitor_path_1(Path, Ref, St#state.files)};
@@ -554,47 +557,12 @@ purge_monitor_path_1(Path, Ref, Dict) ->
     end.
 
 purge_monitor_ref(Ref, Entry) ->
-    Entry#entry{monitors =
-		sets:filter(fun ({_P, R})
-				when R =:= Ref -> false;
-				(_) -> true
-			    end,
-			    Entry#entry.monitors)}.
-
-%% purging monitoring information related to a deleted client Pid
-%% TODO: this should use the refs mapping to avoid visiting all paths
-
-purge_pid(Pid, St) ->
-    Files = dict:map(fun (_Path, Entry) ->
-			     purge_monitor_pid(Pid, Entry)
-		     end,
-		     St#state.files),
-    Dirs = dict:map(fun (_Path, Entry) ->
-			    purge_monitor_pid(Pid, Entry)
-		    end,
-		    St#state.dirs),
-    Refs = dict:filter(fun (_Ref, #monitor_info{pid = P})
-			   when P =:= Pid -> false;
-			   (_, _) -> true
-		       end,
-		       St#state.refs),
-    St#state{refs = Refs,
-	     files = purge_empty_sets(Files),
-	     dirs = purge_empty_sets(Dirs)}.
-
-purge_monitor_pid(Pid, Entry) ->
-    Entry#entry{monitors =
-		sets:filter(fun ({P, _R})
-				when P =:= Pid -> false;
-				(_) -> true
-			    end,
-			    Entry#entry.monitors)}.
+    Entry#entry{monitors = sets:del_element(Ref, Entry#entry.monitors)}.
 
 purge_empty_sets(Dict) ->
     dict:filter(fun (_Path, Entry) ->
 			sets:size(Entry#entry.monitors) > 0
 		end, Dict).
-
 
 %% Generating events upon state changes by comparing old and new states
 %% 
@@ -617,49 +585,49 @@ purge_empty_sets(Dict) ->
 %% The monitor reference is not included in the event descriptor itself,
 %% but is part of the main message format; see cast/2.
 
-event(#entry{info = Info}, #entry{info = Info}, _Type, _Path) ->
+event(#entry{info = Info}, #entry{info = Info}, _Type, _Path, _St) ->
     %% no change in state (note that we never compare directory entry
     %% lists here; if there have been changes, the timestamps should
     %% also be different - see list_dir/2 below)
     ok;
 event(#entry{info = undefined}, #entry{info = NewInfo}=Entry,
-      Type, Path)
+      Type, Path, St)
   when not is_atom(NewInfo) ->
     %% file or directory exists, for a fresh monitor
     Files = diff_lists(Entry#entry.files, []),
-    cast({found, Path, Type, NewInfo, Files}, Entry#entry.monitors);
-event(_OldEntry, #entry{info = NewInfo}=Entry, Type, Path)
+    cast({found, Path, Type, NewInfo, Files}, Entry#entry.monitors, St);
+event(_OldEntry, #entry{info = NewInfo}=Entry, Type, Path, St)
   when is_atom(NewInfo) ->
     %% file or directory is not available
-    cast({error, Path, Type, NewInfo}, Entry#entry.monitors);
-event(OldEntry, #entry{info = Info}=Entry, Type, Path) ->
+    cast({error, Path, Type, NewInfo}, Entry#entry.monitors, St);
+event(OldEntry, #entry{info = Info}=Entry, Type, Path, St) ->
     %% a file or directory has changed or become readable again after an error
-    type_change_event(OldEntry#entry.info, Info, Type, Path, Entry),
+    type_change_event(OldEntry#entry.info, Info, Type, Path, Entry, St),
     Files = diff_lists(Entry#entry.files, OldEntry#entry.files),
-    cast({changed, Path, Type, Info, Files}, Entry#entry.monitors).
+    cast({changed, Path, Type, Info, Files}, Entry#entry.monitors, St).
 
 %% sudden changes in file type cause an 'enoent' error report before the
 %% new status, so that clients do not need to detect this themselves
-type_change_event(#file_info{type = T}, #file_info{type = T}, _, _, _) ->
+type_change_event(#file_info{type = T}, #file_info{type = T}, _, _, _, _) ->
     ok;
-type_change_event(#file_info{}, #file_info{}, MonitorType, Path, Entry) ->
-    cast({error, Path, MonitorType, enoent}, Entry#entry.monitors);
-type_change_event(_, _, _, _, _) ->
+type_change_event(#file_info{}, #file_info{}, Type, Path, Entry, St) ->
+    cast({error, Path, Type, enoent}, Entry#entry.monitors, St);
+type_change_event(_, _, _, _, _, _) ->
     ok.
 
 poll(St) ->
     St#state{files = dict:map(fun (Path, Entry) ->
-				      poll_file(Path, Entry, file)
+				      poll_file(Path, Entry, file, St)
 			      end,
 			      St#state.files),
 	     dirs = dict:map(fun (Path, Entry) ->
-				     poll_file(Path, Entry, directory)
+				     poll_file(Path, Entry, directory, St)
 			     end,
 			     St#state.dirs)}.
 
-poll_file(Path, Entry, Type) ->
+poll_file(Path, Entry, Type, St) ->
     NewEntry = refresh_entry(Path, Entry, Type),
-    event(Entry, NewEntry, Type, Path),
+    event(Entry, NewEntry, Type, Path, St),
     NewEntry.
 
 refresh_entry(Path, Entry, Type) ->
@@ -744,14 +712,20 @@ diff_lists(Fs1, [F | Fs2]) ->
 diff_lists([], []) ->
     [].
 
-
 %% Multicasting events to clients. The message has the form
 %% {file_monitor, MonitorReference, Event}, where Event is described in
 %% more detail above, and 'file_monitor' is the name of this module.
 
-cast(Msg, Monitors) ->
-    sets:fold(fun ({Pid, Ref}, Msg) ->
-		      Pid ! {?MSGTAG, Ref, Msg},
+cast(Msg, Monitors, St) ->
+    sets:fold(fun (Ref, Msg) ->
+		      case dict:find(Ref, St#state.refs) of
+			  {ok, #monitor_info{pid = Pid, auto = Auto}} ->
+			      Pid ! {?MSGTAG, Ref, Msg},
+			      case Auto of
+				  true -> self() ! {?MSGTAG, Ref, Msg};
+				  false -> ok
+			      end
+		      end,
 		      Msg  % note that this is a fold, not a map
 	      end,
 	      Msg, Monitors).
