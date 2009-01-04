@@ -78,6 +78,7 @@
 		     }).
 
 -record(monitor_info, {pid,     % client Pid
+		       auto,    % boolean(), true for an automonitor
 		       objects  % set(object())
 		      }).
 
@@ -130,7 +131,7 @@ automonitor(Path, Opts) ->
 automonitor(Server, Path, _Opts) ->
     FlatPath = filename:flatten(Path),
     {ok, Ref} = gen_server:call(Server, {automonitor, self(), FlatPath}),
-    {ok, FlatPath, Ref}.
+    {ok, Ref, FlatPath}.
 
 
 demonitor(Ref) ->
@@ -216,6 +217,9 @@ init(Options) ->
     set_timer(St),
     {ok, St}.
 
+%% Note that we create all references on the server side, to be
+%% consistent (and in case it will matter, to ensure that the server
+%% mostly uses references local to its own node).
 
 handle_call({monitor, Pid, Object, undefined}, From, St) ->
     handle_call({monitor, Pid, Object, make_ref()}, From, St);
@@ -225,7 +229,9 @@ handle_call({monitor, Pid, Object, Ref}, _From, St)
 	St1 -> {reply, {ok, Ref}, register_client(Pid, Ref, St1)}
     catch
 	not_owner ->
-	    {reply, {error, not_owner}, St}
+	    {reply, {error, not_owner}, St};
+	automonitor ->
+	    {reply, {error, automonitor}, St}
     end;
 handle_call({demonitor, Pid, Ref}, _From, St) when is_reference(Ref) ->
     try delete_monitor(Pid, Ref, St) of
@@ -242,9 +248,11 @@ handle_call({demonitor, Pid, Object, Ref}, _From, St) when is_reference(Ref) ->
 	    {reply, {error, not_owner}, St}
     end;
 handle_call({automonitor, Pid, Path}, _From, St) when is_pid(Pid) ->
+    %% it shouldn't be possible to get exceptions due to wrong owner or
+    %% non-automonitor type here, since we always create a new reference
     Ref = make_ref(),
-    St1 = register_client(Pid, Ref, St),
-    {reply, {ok, Ref}, automonitor_path(Path, Pid, Ref, St1)};
+    St1 = unsafe_automonitor_path(Path, Pid, Ref, St),
+    {reply, {ok, Ref}, register_client(Pid, Ref, St1)};
 handle_call(get_poll_time, _From, St) ->
     {reply, St#state.poll_time, St};
 handle_call({set_poll_time, Time}, _From, St) ->
@@ -304,9 +312,13 @@ set_timer(St) ->
 %%   too automonitored (this does recursive monitoring by definition).
 %%
 %% - If an entry is deleted from an automonitored directory, remove any
-%%   automonitor from it and its subdirectories recursively (note that
+%%   automonitor from it and its subdirectories recursively. Note that
 %%   by definition, this will never auto-remove the top automonitored
-%%   directory).
+%%   directory.
+%%
+%% - Because of the special status of the top directory (the path given
+%%   to automonitor), we do not allow the user to add/remove paths to an
+%%   existing automonitor or pass a user-specified reference.
 %%
 %% - Note that when a demonitoring a directory recursively, we must
 %%   first look up its entry #state.dirs to find the last known
@@ -337,7 +349,7 @@ Info#file_info.type =:= directory ->
     %% add/remove automonitoring to/from all added/deleted entries
     lists:foldl(fun ({added, File}, St) ->
 			automonitor_path(filename:join(Path, File),
-				    Pid, Ref, St);
+					 Pid, Ref, St);
 		    ({deleted, File}, St) ->
 			autodemonitor_path(filename:join(Path, File),
 					   Pid, Ref, St)
@@ -353,18 +365,25 @@ automonitor_path(Path, Pid, Ref, St) ->
     %% Pid should be a known client, otherwise do nothing
     case dict:is_key(Pid, St#state.clients) of
 	true ->
-	    ?debugFmt("automonitoring ~s",[Path]),
-	    Object = case file:read_file_info(Path) of
-			 {ok, #file_info{type=directory}} ->
-			     {directory, Path};
-			 _ ->
-			     {file, Path}    % also for errors
-		     end,
-	    St1 = add_monitor(Object, Pid, Ref, St),
-	    monitor_path(Object, self(), Ref, St1);
+	    try unsafe_automonitor_path(Path, Pid, Ref, St)
+	    catch
+		throw:_ -> St
+	    end;
 	false ->
 	    St
     end.
+
+%% see add_monitor for possible thrown exceptions
+unsafe_automonitor_path(Path, Pid, Ref, St) ->
+    ?debugFmt("automonitoring ~s",[Path]),
+    Object = case file:read_file_info(Path) of
+		 {ok, #file_info{type=directory}} ->
+		     {directory, Path};
+		 _ ->
+		     {file, Path}    % also for errors
+	     end,
+    St1 = add_automonitor(Object, Pid, Ref, St),
+    monitor_path(Object, self(), Ref, St1).
 
 %% This solution is quadratic (at least) for now. We need a better data
 %% representation to make this fast.
@@ -426,14 +445,27 @@ remove_client(Pid, St0) ->
 	    St
     end.
 
-%% Adding a new monitor; throws not_owner if the monitor reference is
-%% already registered for another Pid.
+%% Adding a new monitor; throws 'not_owner' if the monitor reference is
+%% already registered for another Pid; throws 'automonitor' if the
+%% reference is already registered with a different type.
 
 add_monitor(Object, Pid, Ref, St) ->
+    add_monitor(Object, Pid, Ref, St, false).
+
+add_automonitor(Object, Pid, Ref, St) ->
+    add_monitor(Object, Pid, Ref, St, true).
+
+add_monitor(Object, Pid, Ref, St, Auto) ->
     Info = case dict:find(Ref, St#state.refs) of
-	       {ok, #monitor_info{pid = Pid}=OldInfo} -> OldInfo;
-	       {ok, #monitor_info{}} -> throw(not_owner);
-	       error -> #monitor_info{pid = Pid, objects = sets:new()}
+	       {ok, #monitor_info{pid = Pid, auto = Auto}=OldInfo} ->
+		   OldInfo;
+	       {ok, #monitor_info{pid = Pid}} ->
+		   throw(automonitor);
+	       {ok, #monitor_info{}} ->
+		   throw(not_owner);
+	       error ->
+		   #monitor_info{pid = Pid, auto = Auto,
+				 objects = sets:new()}
 	   end,
     NewObjects = sets:add_element(Object, Info#monitor_info.objects),
     Refs = dict:store(Ref, Info#monitor_info{objects = NewObjects},
