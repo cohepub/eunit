@@ -444,13 +444,13 @@ remove_client(Pid, St) ->
     end.
 
 purge_client(Pid, Refs, St0) ->
-    St1 = sets:fold(fun (Ref, St) ->
-			    %% the Pid *should* be the owner here, so
-			    %% a not_owner exception should not happen
-			    delete_monitor(Pid, Ref, St)
-		    end,
-		    St0, Refs),
-    St1#state{clients = dict:erase(Pid, St1#state.clients)}.
+    sets:fold(fun (Ref, St) ->
+		      %% the Pid *should* be the owner here, so
+		      %% a not_owner exception should not happen
+		      delete_monitor(Pid, Ref, St)
+	      end,
+	      St0#state{clients = dict:erase(Pid, St0#state.clients)},
+	      Refs).
 
 %% Adding a new monitor; throws 'not_owner' if the monitor reference is
 %% already registered for another Pid; throws 'automonitor' if the
@@ -511,19 +511,29 @@ new_entry(Path, Type) ->
     refresh_entry(Path, #entry{monitors = sets:new()}, Type).
 
 %% Deleting a monitor by reference; throws not_owner if the monitor
-%% reference is owned by another Pid.
+%% reference is owned by another Pid. The client_info entry may already
+%% have been deleted if we come from purge_client().
 
-delete_monitor(Pid, Ref, St) ->
-    case dict:find(Ref, St#state.refs) of
+delete_monitor(Pid, Ref, St0) ->
+    St1 = case dict:find(Pid, St0#state.clients) of
+	      {ok, #client_info{refs = Refs}=I} ->
+		  NewRefs = sets:del_element(Ref, Refs),
+		  St0#state{clients =
+			    dict:store(Pid, I#client_info{refs = NewRefs},
+				       St0#state.clients)};
+	      error ->
+		  St0
+	  end,
+    case dict:find(Ref, St1#state.refs) of
 	{ok, #monitor_info{pid = Pid, objects = Objects}} ->
-	    sets:fold(fun (Object, St0) ->
-			      purge_monitor_path(Ref, Object, St0)
+	    sets:fold(fun (Object, St) ->
+			      purge_monitor_path(Ref, Object, St)
 		      end,
-		      St#state{refs = dict:erase(Ref, St#state.refs)},
+		      St1#state{refs = dict:erase(Ref, St1#state.refs)},
 		      Objects);
 	{ok, #monitor_info{}} -> throw(not_owner);
 	error ->
-	    St
+	    St1
     end.
 
 %% Deleting a particular path from a monitor. Throws not_owner if the
