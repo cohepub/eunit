@@ -261,7 +261,6 @@ handle_cast(_, St) ->
     {noreply, St}.
 
 handle_info({?MSGTAG, Ref, Event}, St) ->
-    ?debugFmt("autoevent ~p",[{?MSGTAG, Ref, Event}]),
     %% auto-monitoring event to self
     case dict:find(Ref, St#state.refs) of
 	{ok, #monitor_info{pid=Pid}} ->
@@ -398,7 +397,6 @@ automonitor_path(Path, Pid, Ref, St) ->
 
 %% see add_monitor for possible thrown exceptions
 unsafe_automonitor_path(Path, Pid, Ref, St) ->
-    ?debugFmt("automonitoring ~s",[Path]),
     Object = case file:read_file_info(binary_to_list(Path)) of
 		 {ok, #file_info{type=directory}} ->
 		     {directory, Path};
@@ -410,7 +408,6 @@ unsafe_automonitor_path(Path, Pid, Ref, St) ->
 %% This solution is quadratic (at least) for now. We need a better data
 %% representation to make this fast.
 autodemonitor_path(Path, Pid, Ref, St0) ->
-    ?debugFmt("autodemonitoring ~s",[Path]),
     St1 = try demonitor_path(Pid, Ref, {file, Path}, St0) 
  	  catch
  	      not_owner -> St0
