@@ -362,15 +362,13 @@ set_timer(St) ->
 %% - Errors on automonitored directories cause immediate demonitoring of
 %%   the entries of the directory, but not the directory itself.
 
-autoevent({Tag, Path, Type, #file_info{}=Info, _Files}, Pid, Ref, St)
-  when ((Tag =:= found) or (Tag =:= changed)),
-(((Type =:= file) and (Info#file_info.type =:= directory)) orelse
- ((Type =:= directory) and (Info#file_info.type =/= directory))) ->
+autoevent({_Tag, Path, Type, #file_info{}=Info, _Files}, Pid, Ref, St)
+  when (((Type =:= file) and (Info#file_info.type =:= directory)) orelse
+	((Type =:= directory) and (Info#file_info.type =/= directory))) ->
     %% monitor type mismatch detected
     autoremonitor_path(Path, Pid, Ref, St);
-autoevent({Tag, Path, directory, #file_info{}=Info, Files}, Pid, Ref, St0)
-  when ((Tag =:= found) or (Tag =:= changed)),
-Info#file_info.type =:= directory ->
+autoevent({_Tag, Path, directory, #file_info{}=Info, Files}, Pid, Ref, St0)
+  when Info#file_info.type =:= directory ->
     %% add/remove automonitoring to/from all added/deleted entries
     lists:foldl(fun ({added, File}, St) ->
 			automonitor_path(join_to_path(Path, File),
