@@ -195,6 +195,8 @@ file_event_test_() ->
     end.
 
 create_file_subtest({_, Path, Ref}) ->
+    create_file_subtest({Path, Ref});
+create_file_subtest({Path, Ref}) ->
     assert_empty_mailbox(),
     write_file(Path),
     receive
@@ -205,6 +207,8 @@ create_file_subtest({_, Path, Ref}) ->
     end.
 
 delete_file_subtest({_, Path, Ref}) ->
+    delete_file_subtest({Path, Ref});
+delete_file_subtest({Path, Ref}) ->
     assert_empty_mailbox(),
     remove_file(Path),
     receive
@@ -236,8 +240,8 @@ change_file_type_subtest({_, Path, Ref}) ->
 	receive
 	    Msg2 ->
 		?assertMatch({?MSGTAG, Ref,
-			      {changed, Path, file, #file_info{type=directory},
-			       []}}, Msg2)
+			      {changed, Path, file,
+			       #file_info{type=directory}, []}}, Msg2)
 	end,
 	remove_dir(Path),
 	write_file(Path),
@@ -249,8 +253,8 @@ change_file_type_subtest({_, Path, Ref}) ->
 	receive
 	    Msg4 ->
 		?assertMatch({?MSGTAG, Ref,
-			      {changed, Path, file, #file_info{type=regular},
-			       []}}, Msg4)
+			      {changed, Path, file,
+			       #file_info{type=regular}, []}}, Msg4)
 	end
     after
 	catch remove_dir(Path),
@@ -325,6 +329,7 @@ directory_event_test_() ->
  			fun create_dir_subtest/1,
 			fun delete_empty_dir_subtest/1,
  			fun create_dir_subtest/1,
+			fun change_dir_type_subtest/1,
  			fun create_subdir_subtest/1,
  			fun delete_subdir_subtest/1,
  			fun create_subdir_subtest/1,
@@ -414,6 +419,129 @@ delete_recursive_subtest({Path, Ref}) ->
 	Msg ->
 	    ?assertMatch({?MSGTAG, Ref,
 			  {error, Path, directory, enoent}}, Msg)
+    end.
+
+change_dir_type_subtest({Path, Ref}) ->
+    assert_empty_mailbox(),
+    remove_dir(Path),
+    try
+	write_file(Path),
+	receive
+	    Msg1 ->
+		?assertMatch({?MSGTAG, Ref,
+			      {error, Path, directory, enoent}}, Msg1)
+	end,
+	receive
+	    Msg2 ->
+		?assertMatch({?MSGTAG, Ref,
+			      {error, Path, directory, enotdir}}, Msg2)
+	end,
+	remove_file(Path),
+	make_dir(Path),
+	receive
+	    Msg3 ->
+		?assertMatch({?MSGTAG, Ref,
+			      {error, Path, directory, enoent}}, Msg3)
+	end,
+	receive
+	    Msg4 ->
+		?assertMatch({?MSGTAG, Ref,
+			      {changed, Path, directory,
+			       #file_info{type=directory}, []}}, Msg4)
+	end
+    after
+	catch remove_dir(Path),
+        catch remove_file(Path),
+        make_dir(Path)
+    end.
+
+
+%% Automonitoring tests: this runs the server over a group of tests
+automonitor_test_() ->
+    case os:type() of
+	{unix,_} ->
+	    {setup,
+	     fun new_test_server/0,
+	     fun stop_test_server/1,
+	     fun (Server) ->
+		     {setup, local,
+		      fun () ->
+			      Path = <<"/tmp/filemonitortestdir">>,
+			      recursive_remove(Path),
+			      Ref = automonitor_noent(Server, Path),
+			      {Path, Ref}
+		      end,
+		      {with,
+		       [fun create_file_subtest/1,
+			fun auto_change_file_type_subtest/1,
+			fun delete_file_subtest/1
+		       ]}
+		     }
+	     end
+	    };
+	_ ->
+	    []
+    end.
+
+automonitor_noent(Server, Path) ->
+    {ok, Ref, Path} = ?SERVER:automonitor(Server, Path, []),
+    receive
+	Msg ->
+	    ?assertMatch({?MSGTAG, Ref, {error, Path, file, enoent}},
+			 Msg)
+    end,
+    Ref.
+
+auto_change_file_type_subtest({Path, Ref}) ->
+    assert_empty_mailbox(),
+    remove_file(Path),
+    try
+	make_dir(Path),
+	receive
+	    Msg1 ->
+		?assertMatch({?MSGTAG, Ref,
+			      {error, Path, file, enoent}}, Msg1)
+	end,
+	receive
+	    Msg2 ->
+		?assertMatch({?MSGTAG, Ref,
+			      {changed, Path, file,
+			       #file_info{type=directory}, []}}, Msg2)
+	end,
+	%% The type change will cause the server to recreate the
+	%% monitor, which will do a single poll of the file. To avoid
+	%% handling all possible consequences of races, we wait for this
+	%% event before we remove the directory again, to ensure that
+	%% the new monitor is set up for the directory while it exists.
+	receive
+	    Msg3 ->
+		?assertMatch({?MSGTAG, Ref,
+			      {found, Path, directory,
+			       #file_info{type=directory}, []}}, Msg3)
+	end,
+	remove_dir(Path),
+	write_file(Path),
+	receive
+ 	    Msg4 ->
+ 		?assertMatch({?MSGTAG, Ref,
+ 			      {error, Path, directory, enoent}}, Msg4)
+	end,
+ 	receive
+  	    Msg5 ->
+  		?assertMatch({?MSGTAG, Ref,
+  			      {error, Path, directory, enotdir}}, Msg5)
+ 	end,
+ 	%% wait for the event following the monitor type change
+ 	receive
+ 	    Msg6 ->
+ 		?assertMatch({?MSGTAG, Ref,
+ 			      {found, Path, file,
+ 			       #file_info{type=regular}, []}}, Msg6)
+ 	end
+    after
+	catch remove_dir(Path),
+        catch remove_file(Path),
+	write_file(Path)
     end.
 
 

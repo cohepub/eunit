@@ -60,7 +60,8 @@
 %% @type object() -> {file|directory, filename()}
 %% @type monitor() -> reference()
 
--record(state, {poll_time,  % polling interval (milliseconds)
+-record(state, {poll=true,  % boolean(), false if polling is disabled
+		poll_time,  % polling interval (milliseconds)
 		dirs,       % map: directory path -> #entry{}
 		files,      % map: file path -> #entry{}
 		refs,       % map: monitor() -> #monitor_info{}
@@ -273,6 +274,8 @@ handle_info({?MSGTAG, Ref, Event}, St) ->
     end;
 handle_info(poll_time, St) ->
     {noreply, set_timer(poll(St))};
+handle_info(enable_poll, St) ->
+    {noreply, St#state{poll=true}};
 handle_info({'DOWN', _Ref, process, Pid, _Info}, St) ->
     {noreply, remove_client(Pid, St)};
 handle_info(_, St) ->
@@ -363,8 +366,8 @@ autoevent({Tag, Path, Type, #file_info{}=Info, _Files}, Pid, Ref, St)
   when ((Tag =:= found) or (Tag =:= changed)),
 (((Type =:= file) and (Info#file_info.type =:= directory)) orelse
  ((Type =:= directory) and (Info#file_info.type =/= directory))) ->
-    %% monitor type mismatch detected - recreate it to get correct type
-    automonitor_path(Path, Pid, Ref, autodemonitor_path(Path, Pid, Ref, St));
+    %% monitor type mismatch detected
+    autoremonitor_path(Path, Pid, Ref, St);
 autoevent({Tag, Path, directory, #file_info{}=Info, Files}, Pid, Ref, St0)
   when ((Tag =:= found) or (Tag =:= changed)),
 Info#file_info.type =:= directory ->
@@ -377,11 +380,18 @@ Info#file_info.type =:= directory ->
 					   Pid, Ref, St)
 		end,
 		St0, Files);
+autoevent({error, Path, directory, enotdir}, Pid, Ref, St) ->
+    %% monitor type mismatch detected
+    autoremonitor_path(Path, Pid, Ref, St);
 autoevent({error, Path, directory, _}, Pid, Ref, St) ->
     %% only demonitor subdirectories/files
     autodemonitor_subpaths(Path, Pid, Ref, St);
 autoevent(_Event, _Pid, _Ref, St) ->
     St.
+
+%% monitor type mismatch detected - recreate it to get correct type
+autoremonitor_path(Path, Pid, Ref, St) ->
+    automonitor_path(Path, Pid, Ref, autodemonitor_path(Path, Pid, Ref, St)).
 
 automonitor_path(Path, Pid, Ref, St) ->
     %% Pid should be a known client, otherwise do nothing
@@ -624,34 +634,50 @@ event(#entry{info = undefined}, #entry{info = NewInfo}=Entry,
     %% file or directory exists, for a fresh monitor
     Files = diff_lists(Entry#entry.files, []),
     cast({found, Path, Type, NewInfo, Files}, Entry#entry.monitors, St);
-event(_OldEntry, #entry{info = NewInfo}=Entry, Type, Path, St)
+event(OldEntry, #entry{info = NewInfo}=Entry, Type, Path, St)
   when is_atom(NewInfo) ->
     %% file or directory is not available
+    type_change_event(OldEntry#entry.info, NewInfo, Type, Path, Entry, St),
     cast({error, Path, Type, NewInfo}, Entry#entry.monitors, St);
-event(OldEntry, #entry{info = Info}=Entry, Type, Path, St) ->
+event(OldEntry, #entry{info = NewInfo}=Entry, Type, Path, St) ->
     %% a file or directory has changed or become readable again after an error
-    type_change_event(OldEntry#entry.info, Info, Type, Path, Entry, St),
+    type_change_event(OldEntry#entry.info, NewInfo, Type, Path, Entry, St),
     Files = diff_lists(Entry#entry.files, OldEntry#entry.files),
-    cast({changed, Path, Type, Info, Files}, Entry#entry.monitors, St).
+    cast({changed, Path, Type, NewInfo, Files}, Entry#entry.monitors, St).
 
 %% sudden changes in file type cause an 'enoent' error report before the
 %% new status, so that clients do not need to detect this themselves
 type_change_event(#file_info{type = T}, #file_info{type = T}, _, _, _, _) ->
     ok;
 type_change_event(#file_info{}, #file_info{}, Type, Path, Entry, St) ->
-    cast({error, Path, Type, enoent}, Entry#entry.monitors, St);
+    cast_enoent(Type, Path, Entry, St);
+type_change_event(#file_info{type = directory}, enotdir, Type, Path, Entry,
+		  St) ->
+    cast_enoent(Type, Path, Entry, St);
+type_change_event(enotdir, #file_info{type = directory}, Type, Path, Entry,
+		  St) ->
+    cast_enoent(Type, Path, Entry, St);
 type_change_event(_, _, _, _, _, _) ->
     ok.
 
-poll(St) ->
-    St#state{files = dict:map(fun (Path, Entry) ->
-				      poll_file(Path, Entry, file, St)
-			      end,
-			      St#state.files),
-	     dirs = dict:map(fun (Path, Entry) ->
-				     poll_file(Path, Entry, directory, St)
-			     end,
-			     St#state.dirs)}.
+cast_enoent(Type, Path, Entry, St) ->
+    cast({error, Path, Type, enoent}, Entry#entry.monitors, St).
+
+poll(#state{poll=false}=St) ->
+    St;
+poll(#state{poll=true}=St) ->
+    Files = dict:map(fun (Path, Entry) ->
+			     poll_file(Path, Entry, file, St)
+		     end,
+		     St#state.files),
+    Dirs = dict:map(fun (Path, Entry) ->
+			    poll_file(Path, Entry, directory, St)
+		    end,
+		    St#state.dirs),
+    %% polling will now be disabled until all automonitoring events have
+    %% been processed:
+    self() ! enable_poll,
+    St#state{poll=false, files = Files, dirs = Dirs}.
 
 poll_file(Path, Entry, Type, St) ->
     NewEntry = refresh_entry(Path, Entry, Type),
