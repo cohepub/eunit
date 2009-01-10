@@ -16,7 +16,7 @@
 %% $Id$ 
 %%
 %% @author Richard Carlsson <richardc@it.uu.se>
-%% @copyright 2006 Richard Carlsson
+%% @copyright 2006-2009 Richard Carlsson
 %% @doc Erlang file monitoring service
 
 -module(file_monitor).
@@ -47,6 +47,10 @@
 %% We never rewrite the paths, e.g. from relative to absolute, but we
 %% convert every path into a binary internally, for the sake of
 %% comparisons, and return it to the caller for reference.
+%%
+%% @type filename() = binary() | atom() | [char() | filename()]. This is
+%% an "extended IO-list", that allows atoms as well as binaries to occur
+%% either on their own or embedded in a list or deep list.
 
 -define(DEFAULT_POLL_TIME, 5000).  % change with option poll_time
 -define(MIN_POLL_TIME, 100).
