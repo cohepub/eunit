@@ -15,7 +15,6 @@
 %%
 %% $Id$ 
 %%
-%% @private (for now)
 %% @author Richard Carlsson <richardc@it.uu.se>
 %% @copyright 2006 Richard Carlsson
 %% @doc Erlang file monitoring service
@@ -39,9 +38,6 @@
 
 -include_lib("kernel/include/file.hrl").
 
-%%-include_lib("eunit/include/eunit.hrl").
--include("../include/eunit.hrl").
-
 
 %% The behaviour of this service is inspired by the open source FAM
 %% daemon [http://oss.sgi.com/projects/fam/].
@@ -49,7 +45,7 @@
 %% NOTE: Monitored paths should be absolute, but this is not checked.
 %% 
 %% We never rewrite the paths, e.g. from relative to absolute, but we
-%% ensure that every path is a flat string internally, for the sake of
+%% convert every path into a binary internally, for the sake of
 %% comparisons, and return it to the caller for reference.
 
 -define(DEFAULT_POLL_TIME, 5000).  % change with option poll_time
@@ -57,7 +53,7 @@
 -define(SERVER, ?MODULE).
 -define(MSGTAG, ?SERVER).
 
-%% @type object() = {file|directory, filename()}
+%% % @type object() = {file|directory, filename()}
 %% @type monitor() = reference()
 
 -record(state, {poll=true,  % boolean(), false if polling is disabled
