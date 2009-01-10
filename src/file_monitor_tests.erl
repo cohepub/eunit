@@ -273,7 +273,7 @@ add_monitor3_subtest({Server, Ref, _, Path3}) ->
 add_monitor_subtest_1(Server, Ref, Path) ->
     assert_empty_mailbox(),
     {ok, Ref, Path} = ?SERVER:monitor_file(Server, Path,
-					   [{reference, Ref}]),
+					   [{monitor, Ref}]),
     receive
 	Msg ->
 	    ?assertMatch({?MSGTAG, Ref, {error, Path, file, enoent}},
@@ -555,7 +555,7 @@ auto_change_file_type_subtest({Path, Ref}) ->
 %% test utilities
 
 new_test_server() ->
-    {ok, Server} = ?SERVER:start(undefined, [{poll_time, 100}]),
+    {ok, Server} = ?SERVER:start(undefined, [{interval, 100}]),
     Server.
 
 stop_test_server(Server) ->

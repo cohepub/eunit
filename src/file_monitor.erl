@@ -18,6 +18,93 @@
 %% @author Richard Carlsson <richardc@it.uu.se>
 %% @copyright 2006-2009 Richard Carlsson
 %% @doc Erlang file monitoring service
+%% 
+%% The behaviour of this service is inspired by the open source FAM
+%% daemon ([http://oss.sgi.com/projects/fam/]). It allows file system
+%% paths to be monitored, so that a message will be sent to the client
+%% process whenever a status change is detected. Currently, the only
+%% supported method of detection is by regular polling by the server.
+%% While it is not optimal, polling has less overhead than might be
+%% expected, and is portable across platforms. The polling interval can
+%% be adjusted; by default the server polls all monitored paths every 5
+%% seconds. Recursive (automatic) monitoring is supported. The server
+%% keeps track of its client processes, and removes all their monitors
+%% if they should die.
+%%
+%% == Event messages ==
+%%
+%% When a new monitor is set up, or a change is detected, an event
+%% message is sent to the client. These have the following general form:
+%% <pre>{@type @{file_monitor, Ref::monitor(), Event@}}</pre>
+%% where `Ref' is the monitor reference returned when the monitor was
+%% set up, and `Event' is one of the following:
+%% <ul>
+%%  <li>{@type @{found, Path::binary(), Type, Info::#file_info@{@},
+%%                      Entries::[binary()]@}}</li>
+%%  <li>{@type @{changed, Path::binary(), Type, Info::#file_info@{@},
+%%                      Entries::[binary()]@}}</li>
+%%  <li>{@type @{error, Path::binary(), Type, PosixError::atom()@}}</li>
+%% </ul>
+%% where `Path' is the watched path (as a binary), `Type' is the type of
+%% monitoring being performed (either `file' or `directory'), `Info' is
+%% a `file_info' record as defined in `kernel/include/file.hrl', and
+%% `Entries' is the list of directory entries (base names only) if
+%% `Type' is `directory', otherwise this is always the empty list.
+%%
+%% A `found' event is sent when a monitor is initially set up, if the
+%% path can be read. After that, whenever a change in status is
+%% detected, a `changed' event is sent. If the file does not exist or
+%% could for some other reason not be accessed, an `error' event is sent
+%% (both initially and for subsequent changes). In other words, the
+%% first event for a path is always either `found' or `error', and later
+%% events are either `changed' or `error'.
+%% 
+%% === Detection of file type changes ===
+%%
+%% If the object found at a path changes type in the interval between
+%% two polls, for example if a directory is replaced by a file with the
+%% same name, or vice versa, the file monitor server will detect this
+%% and dispatch an `enoent' error event before the new status event. A
+%% client can thus rely on always seeing the old file disappear before
+%% any change that reports a different file type.
+%% 
+%% == Monitoring types ==
+%%
+%% There are two ways in which a path can be monitored: as a `file',
+%% meaning that we are interested only in the object found at that path,
+%% or as a `directory', meaning that we expect the path to point to a
+%% directory, and we are also interested in the list of entries of that
+%% directory.
+%%
+%% If a path is monitored as a directory, and the object at the path
+%% exists but is not a directory, an `enotdir' error event will be
+%% generated. An existing directory can however both be monitored as a
+%% directory and as a file - the difference is that in the latter case,
+%% the reported list of entries will always be empty.
+%% 
+%% == Automatic (recursive) monitoring ==
+%%
+%% Automatic monitoring (automonitoring for short) can be used to watch
+%% a single file of any type, or a whole directory tree. The monitoring
+%% type (`file' or `directory') used for any path is based on the actual
+%% type of object found at the path (`directory' if the object is a
+%% readable directory, and `file' otherwise). If the object is replaced
+%% by another of different type, the monitoring type will change
+%% automatically.
+%%
+%% When a directory becomes automonitored, all of its entries will also
+%% be automatically monitored, recursively. As entries are created or
+%% deleted in an automonitored directory, they will be dynamically added
+%% or removed, respectively, from being monitored. The root path used to
+%% create the automonitor will however always remain monitored (even if
+%% the object temporarily or permanently disappears) until the server is
+%% told to delete the monitor.
+%%
+%% The event messages sent to the client are the same as if manual
+%% monitoring was done. A newly discovered path will be reported by a
+%% `found' (or possibly, by an `error' event), and subsequent changes on
+%% that path are reported by `changed' and `error' events. If the
+%% monitoring type is changed, a new `found' event is sent, and so on.
 
 -module(file_monitor).
 
@@ -27,8 +114,8 @@
 	 monitor_dir/2, monitor_dir/3, automonitor/1, automonitor/2,
 	 automonitor/3, demonitor/1, demonitor/2, demonitor_file/2,
 	 demonitor_file/3, demonitor_dir/2, demonitor_dir/3,
-	 get_poll_time/0, get_poll_time/1, set_poll_time/1,
-	 set_poll_time/2, normalize_path/1]).
+	 get_interval/0, get_interval/1, set_interval/1, set_interval/2,
+	 normalize_path/1]).
 
 -export([start/0, start/1, start/2, start_link/0, start_link/1,
 	 start_link/2, stop/0, stop/1]).
@@ -39,9 +126,6 @@
 -include_lib("kernel/include/file.hrl").
 
 
-%% The behaviour of this service is inspired by the open source FAM
-%% daemon [http://oss.sgi.com/projects/fam/].
-%%
 %% NOTE: Monitored paths should be absolute, but this is not checked.
 %% 
 %% We never rewrite the paths, e.g. from relative to absolute, but we
@@ -50,18 +134,27 @@
 %%
 %% @type filename() = binary() | atom() | [char() | filename()]. This is
 %% an "extended IO-list", that allows atoms as well as binaries to occur
-%% either on their own or embedded in a list or deep list.
+%% either on their own or embedded in a list or deep list. The intent of
+%% this is to accept any file name that can be used by the standard
+%% library module `file', as well as any normal IO-list, and any list
+%% that is formed by combining such fragments.
+%%
+%% @type options() = [term()]. A list of options.
+%%
+%% @type server_ref() = pid() | atom() | {Node::atom(), atom()} |
+%% {global, atom()}. A reference to a running server. See {@link
+%% //stdlib/gen_server:call/3} for more information.
 
--define(DEFAULT_POLL_TIME, 5000).  % change with option poll_time
--define(MIN_POLL_TIME, 100).
+-define(DEFAULT_INTERVAL, 5000).  % change with option interval
+-define(MIN_INTERVAL, 100).
 -define(SERVER, ?MODULE).
 -define(MSGTAG, ?SERVER).
 
 %% % @type object() = {file|directory, filename()}
-%% @type monitor() = reference()
+%% @type monitor() = reference(). A monitor reference.
 
 -record(state, {poll=true,  % boolean(), false if polling is disabled
-		poll_time,  % polling interval (milliseconds)
+		interval,   % polling interval (milliseconds)
 		files,      % map: file path -> #entry{}
 		dirs,       % map: directory path -> #entry{}
 		autodirs,   % map: directory path -> monitor() -> entries
@@ -87,22 +180,52 @@
 %% User interface
 %%
 
+%% @spec (filename()) ->
+%%         {ok, monitor(), binary()} | {error, not_owner | automonitor}
+%% @equiv monitor_file(Path, [])
 monitor_file(Path) ->
     monitor_file(Path, []).
 
+%% @spec (filename(), options()) ->
+%%         {ok, monitor(), binary()} | {error, not_owner | automonitor}
+%% @equiv monitor_file(file_monitor, Path, Opts)
 monitor_file(Path, Opts) ->
     monitor_file(?SERVER, Path, Opts).
 
+%% @spec (server_ref(), filename(), options()) ->
+%%         {ok, monitor(), binary()} | {error, not_owner | automonitor}
+%% @doc Monitors the specified file path. Returns the monitor reference
+%% as well as the monitored path as a binary.
+%%
+%% Options:
+%% <ul>
+%%   <li>{@type @{monitor, monitor()@}}: specifies a reference for
+%%   identifying the monitor to which the path should be added. The
+%%   monitor need not already exist, but if it does, only the same
+%%   process is allowed to add paths to it, and paths may not be added
+%%   manually to an automonitor.</li>
+%% </ul>
 monitor_file(Server, Path, Opts) ->
     monitor(Server, Path, Opts, file).
 
-
+%% @spec (filename()) ->
+%%         {ok, monitor(), binary()} | {error, not_owner | automonitor}
+%% @equiv monitor_dir(Path, [])
 monitor_dir(Path) ->
     monitor_dir(Path, []).
 
+%% @spec (filename(), options()) ->
+%%         {ok, monitor(), binary()} | {error, not_owner | automonitor}
+%% @equiv monitor_dir(file_monitor, Path, Opts)
 monitor_dir(Path, Opts) ->
     monitor_dir(?SERVER, Path, Opts).
 
+%% @spec (server_ref(), filename(), options()) ->
+%%         {ok, monitor(), binary()} | {error, not_owner | automonitor}
+%% @doc Monitors the specified directory path. Returns the monitor
+%% reference as well as the monitored path as a binary.
+%%
+%% Options: see {@link monitor_file/3}.
 monitor_dir(Server, Path, Opts) ->
     monitor(Server, Path, Opts, directory).
 
@@ -110,7 +233,7 @@ monitor_dir(Server, Path, Opts) ->
 %% not exported
 monitor(Server, Path, Opts, Type) ->
     FlatPath = normalize_path(Path),
-    Ref = case proplists:get_value(reference, Opts) of
+    Ref = case proplists:get_value(monitor, Opts) of
 	      R when is_reference(R) ; R =:= undefined -> R;
 	      _ -> erlang:error(badarg)
 	  end,
@@ -121,33 +244,57 @@ monitor(Server, Path, Opts, Type) ->
     end.
 
 
+%% @spec (filename()) -> {ok, monitor(), binary()}
+%% @equiv automonitor(Path, [])
 automonitor(Path) ->
     automonitor(Path, []).
 
+%% @spec (filename(), options()) -> {ok, monitor(), binary()}
+%% @equiv automonitor(file_monitor, Path, Opts)
 automonitor(Path, Opts) ->
     automonitor(?SERVER, Path, Opts).
 
+%% @spec (server_ref(), filename(), options()) -> {ok, monitor(), binary()}
+%% @doc Automonitors the specified path. Returns the monitor reference as
+%% well as the monitored path as a binary.
+%%
+%% Options: none at present.
 automonitor(Server, Path, _Opts) ->
     FlatPath = normalize_path(Path),
     {ok, Ref} = gen_server:call(Server, {automonitor, self(), FlatPath}),
     {ok, Ref, FlatPath}.
 
 
+%% @spec (monitor()) -> ok | {error, not_owner}
+%% @equiv demonitor(file_monitor, Ref)
 demonitor(Ref) ->
     demonitor(?SERVER, Ref).
 
+%% @spec (server_ref(), monitor()) -> ok | {error, not_owner}
+%% @doc Deletes the specified monitor. This can only be done by the
+%% process that created the monitor.
 demonitor(Server, Ref) when is_reference(Ref) ->
     ok = gen_server:call(Server, {demonitor, self(), Ref}).
 
+%% @spec (filename(), monitor()) -> ok | {error, not_owner}
+%% @equiv demonitor_file(file_monitor, Path, Ref)
 demonitor_file(Path, Ref) ->
     demonitor_file(?SERVER, Path, Ref).
 
+%% @spec (server_ref(), filename(), monitor()) -> ok | {error, not_owner}
+%% @doc Removes the file path from the specified monitor. This can only
+%% be done by the process that created the monitor.
 demonitor_file(Server, Path, Ref) ->
     demonitor(Server, Path, Ref, file).
 
+%% @spec (filename(), monitor()) -> ok | {error, not_owner}
+%% @equiv demonitor_dir(file_monitor, Path, Ref)
 demonitor_dir(Path, Ref) ->
     demonitor_dir(?SERVER, Path, Ref).
 
+%% @spec (server_ref(), filename(), monitor()) -> ok | {error, not_owner}
+%% @doc Removes the directory path from the specified monitor. This can
+%% only be done by the process that created the monitor.
 demonitor_dir(Server, Path, Ref) ->
     demonitor(Server, Path, Ref, directory).
 
@@ -157,46 +304,85 @@ demonitor(Server, Path, Ref, Type) when is_reference(Ref) ->
     ok = gen_server:call(Server, {demonitor, self(), {Type, FlatPath}, Ref}).
 
 
-get_poll_time() ->
-    get_poll_time(?SERVER).
+%% @spec () -> integer()
+%% @equiv get_interval(file_monitor)
+get_interval() ->
+    get_interval(?SERVER).
 
-get_poll_time(Server) ->
-    gen_server:call(Server, get_poll_time).
-
-
-set_poll_time(Time) ->
-    set_poll_time(?SERVER, Time).
-
-set_poll_time(Server, Time) when is_integer(Time) ->
-    gen_server:call(Server, {set_poll_time, Time}).
+%% @spec (server_ref()) -> integer()
+%% @doc Returns the current polling interval.
+get_interval(Server) ->
+    gen_server:call(Server, get_interval).
 
 
+%% @spec (integer()) -> ok
+%% @equiv set_interval(file_monitor, Time)
+set_interval(Time) ->
+    set_interval(?SERVER, Time).
+
+%% @spec (server_ref(), integer()) -> ok
+%% @doc Sets the polling interval. Units are in milliseconds.
+set_interval(Server, Time) when is_integer(Time) ->
+    gen_server:call(Server, {set_interval, Time}).
+
+
+%% @spec () -> {ok, ServerPid::pid()} | ignore | {error, any()}
+%% @equiv start([])
 start() ->
     start([]).
 
+%% @spec (options()) -> {ok, ServerPid::pid()} | ignore | {error, any()}
+%% @equiv start({local, file_monitor}, Options)
 start(Options) ->
     start({local, ?SERVER}, Options).
 
+%% @spec ({local, atom()} | {global, atom()} | undefined, options()) ->
+%%         {ok, ServerPid::pid()} | ignore | {error, any()}
+%% @doc Starts the server and registers it using the specified name.
+%% If the name is `undefined', the server will not be registered. See
+%% {@link //stdlib/gen_server:start_link/4} for details about the return
+%% value.
+%%
+%% Options:
+%% <ul>
+%%   <li>{@type {interval, Milliseconds::integer()@}}</li>
+%% </ul>
 start(undefined, Options) ->
     gen_server:start(?MODULE, Options, []);
 start(Name, Options) ->
     gen_server:start(Name, ?MODULE, Options, []).
 
+%% @spec () -> {ok, ServerPid::pid()} | ignore | {error, any()}
+%% @equiv start_link([])
 start_link() ->
     start_link([]).
 
+%% @spec (options()) -> {ok, ServerPid::pid()} | ignore | {error, any()}
+%% @equiv start_link({local, file_monitor}, Options)
 start_link(Options) ->
     start_link({local, ?SERVER}, Options).
 
+%% @spec ({local, atom()} | {global, atom()} | undefined, options()) ->
+%%         {ok, ServerPid::pid()} | ignore | {error, any()}
+%% @doc Starts the server, links it to the current process, and
+%% registers it using the specified name. If the name is `undefined',
+%% the server will not be registered. See {@link
+%% //stdlib/gen_server:start_link/4} for details about the return value.
+%%
+%% Options: see {@link start/2}.
 start_link(undefined, Options) ->
     gen_server:start_link(?MODULE, Options, []);
 start_link(Name, Options) ->
     gen_server:start_link(Name, ?MODULE, Options, []).
 
 
+%% @spec () -> ok
+%% @equiv stop(file_monitor)
 stop() ->
     stop(?SERVER).
 
+%% @spec (server_ref()) -> ok
+%% @doc Stops the specified server.
 stop(Server) ->
     gen_server:call(Server, stop),
     ok.
@@ -206,9 +392,10 @@ stop(Server) ->
 %% gen_server callbacks
 %%
 
+%% @private
 init(Options) ->
-    Time = safe_poll_time(proplists:get_value(poll_time, Options)),
-    St = #state{poll_time = Time,
+    Time = safe_interval(proplists:get_value(interval, Options)),
+    St = #state{interval = Time,
 		files = dict:new(),
 		dirs = dict:new(),
 		autodirs = dict:new(),
@@ -221,6 +408,7 @@ init(Options) ->
 %% consistent (and in case it will matter, to ensure that the server
 %% mostly uses references local to its own node).
 
+%% @private
 handle_call({monitor, Pid, Object, undefined}, From, St) ->
     handle_call({monitor, Pid, Object, make_ref()}, From, St);
 handle_call({monitor, Pid, Object, Ref}, _From, St)
@@ -253,16 +441,18 @@ handle_call({automonitor, Pid, Path}, _From, St) when is_pid(Pid) ->
     Ref = make_ref(),
     St1 = unsafe_automonitor_path(Path, Pid, Ref, St),
     {reply, {ok, Ref}, register_client(Pid, Ref, St1)};
-handle_call(get_poll_time, _From, St) ->
-    {reply, St#state.poll_time, St};
-handle_call({set_poll_time, Time}, _From, St) ->
-    {reply, ok, St#state{poll_time=safe_poll_time(Time)}};
+handle_call(get_interval, _From, St) ->
+    {reply, St#state.interval, St};
+handle_call({set_interval, Time}, _From, St) ->
+    {reply, ok, St#state{interval=safe_interval(Time)}};
 handle_call(stop, _From, St) ->
     {stop, normal, ok, St}.
 
+%% @private
 handle_cast(_, St) ->
     {noreply, St}.
 
+%% @private
 handle_info({?MSGTAG, Ref, Event}, St) ->
     %% auto-monitoring event to self
     case dict:find(Ref, St#state.refs) of
@@ -274,7 +464,7 @@ handle_info({?MSGTAG, Ref, Event}, St) ->
 	    %% ignore the message
 	    {noreply, St}
     end;
-handle_info(poll_time, St) ->
+handle_info(poll, St) ->
     {noreply, set_timer(poll(St))};
 handle_info(enable_poll, St) ->
     {noreply, St#state{poll=true}};
@@ -283,9 +473,11 @@ handle_info({'DOWN', _Ref, process, Pid, _Info}, St) ->
 handle_info(_, St) ->
     {noreply, St}.
 
+%% @private
 code_change(_OldVsn, St, _Extra) ->
     {ok, St}.
 
+%% @private
 terminate(_Reason, _St) ->
     ok.
 
@@ -297,6 +489,9 @@ terminate(_Reason, _St) ->
 %% contain atoms as well as binaries. This is flattened into a single
 %% binary (currently assuming that the input uses an 8-bit encoding).
 %% A single character is not a valid path; it must be within a list.
+
+%% @spec (filename()) -> binary()
+%% @doc Flattens the given path to a single binary.
 
 normalize_path(Path) when is_binary(Path) -> Path;
 normalize_path(Path) ->
@@ -325,12 +520,12 @@ max(_, Y) -> Y.
 min(X, Y) when X < Y -> X;
 min(_, Y) -> Y.
 
-safe_poll_time(N) when is_integer(N) ->
-    min(16#FFFFffff, max(N, ?MIN_POLL_TIME));
-safe_poll_time(_) -> ?DEFAULT_POLL_TIME.
+safe_interval(N) when is_integer(N) ->
+    min(16#FFFFffff, max(N, ?MIN_INTERVAL));
+safe_interval(_) -> ?DEFAULT_INTERVAL.
 
 set_timer(St) ->
-    erlang:send_after(St#state.poll_time, self(), poll_time),
+    erlang:send_after(St#state.interval, self(), poll),
     St.
 
 %% Handling of auto-monitoring events
