@@ -57,13 +57,14 @@
 -define(SERVER, ?MODULE).
 -define(MSGTAG, ?SERVER).
 
-%% @type object() -> {file|directory, filename()}
-%% @type monitor() -> reference()
+%% @type object() = {file|directory, filename()}
+%% @type monitor() = reference()
 
 -record(state, {poll=true,  % boolean(), false if polling is disabled
 		poll_time,  % polling interval (milliseconds)
-		dirs,       % map: directory path -> #entry{}
 		files,      % map: file path -> #entry{}
+		dirs,       % map: directory path -> #entry{}
+		autodirs,   % map: directory path -> monitor() -> entries
 		refs,       % map: monitor() -> #monitor_info{}
 		clients     % map: client Pid -> #client_info{}
 	       }).
@@ -208,8 +209,9 @@ stop(Server) ->
 init(Options) ->
     Time = safe_poll_time(proplists:get_value(poll_time, Options)),
     St = #state{poll_time = Time,
-		dirs = dict:new(),
 		files = dict:new(),
+		dirs = dict:new(),
+		autodirs = dict:new(),
 		clients = dict:new(),
 		refs = dict:new()},
     set_timer(St),
@@ -345,11 +347,10 @@ set_timer(St) ->
 %%   to automonitor), we do not allow the user to add/remove paths to an
 %%   existing automonitor or pass a user-specified reference.
 %%
-%% - Note that when a demonitoring a directory recursively, we must
-%%   first look up its entry #state.dirs to find the last known
-%%   directory entries (the directory itself no longer exists), which
-%%   must be up to date with respect to the possible automonitors we
-%%   have.
+%% - Note that to be able to demonitor directories recursively, we must
+%%   track the automonitored directory entries for each directory and
+%%   monitor pair (since the directory itself can no longer be read,
+%%   there is no other way we can know which subentries to demonitor).
 %%
 %% - An automonitored non-directory that changes type to directory, or
 %%   vice versa, should should cause recreation of the monitor to match
@@ -371,11 +372,13 @@ autoevent({_Tag, Path, directory, #file_info{}=Info, Files}, Pid, Ref, St0)
   when Info#file_info.type =:= directory ->
     %% add/remove automonitoring to/from all added/deleted entries
     lists:foldl(fun ({added, File}, St) ->
+			St1 = add_autodir_entry(Path, File, Ref, St),
 			automonitor_path(join_to_path(Path, File),
-					 Pid, Ref, St);
+					 Pid, Ref, St1);
 		    ({deleted, File}, St) ->
+			St1 = remove_autodir_entry(Path, File, Ref, St),
 			autodemonitor_path(join_to_path(Path, File),
-					   Pid, Ref, St)
+					   Pid, Ref, St1)
 		end,
 		St0, Files);
 autoevent({error, Path, directory, enotdir}, Pid, Ref, St) ->
@@ -383,7 +386,7 @@ autoevent({error, Path, directory, enotdir}, Pid, Ref, St) ->
     autoremonitor_path(Path, Pid, Ref, St);
 autoevent({error, Path, directory, _}, Pid, Ref, St) ->
     %% only demonitor subdirectories/files
-    autodemonitor_subpaths(Path, Pid, Ref, St);
+    autodemonitor_dir_entries(Path, Pid, Ref, St);
 autoevent(_Event, _Pid, _Ref, St) ->
     St.
 
@@ -413,8 +416,6 @@ unsafe_automonitor_path(Path, Pid, Ref, St) ->
 	     end,
     add_automonitor(Object, Pid, Ref, St).
 
-%% This solution is quadratic (at least) for now. We need a better data
-%% representation to make this fast.
 autodemonitor_path(Path, Pid, Ref, St0) ->
     St1 = try demonitor_path(Pid, Ref, {file, Path}, St0) 
  	  catch
@@ -424,31 +425,72 @@ autodemonitor_path(Path, Pid, Ref, St0) ->
 	  catch
 	      not_owner -> St1
 	  end,
-    autodemonitor_subpaths(Path, Pid, Ref, St2).
+    autodemonitor_dir_entries(Path, Pid, Ref, St2).
 
-autodemonitor_subpaths(Path, Pid, Ref, St0) ->
-    case dict:find(Ref, St0#state.refs) of
-	{ok, #monitor_info{pid = Pid, objects = Objects}} ->
-	    Root = filename:split(binary_to_list(Path)),
-	    sets:fold(fun ({_, P}, St) ->
-			      P1 = filename:split(binary_to_list(P)),
-			      case proper_prefix(Root, P1) of
-				  true ->
-				      autodemonitor_path(P, Pid, Ref, St);
-				  false ->
-				      St
-			      end
-		      end,
-		      St0, Objects);
+autodemonitor_dir_entries(Path, Pid, Ref, St0) ->
+    Dirs0 = St0#state.autodirs,
+    case dict:find(Path, Dirs0) of
+	{ok, Map0} ->
+	    case dict:find(Ref, Map0) of
+		{ok, Set} ->
+		    Map = dict:erase(Ref, Map0),
+		    %% purge empty entries to save space
+		    Dirs = case dict:size(Map) > 0 of
+			       true -> dict:store(Path, Map, Dirs0);
+			       false -> dict:erase(Path, Dirs0)
+			   end,
+		    St1 = St0#state{autodirs = Dirs},
+		    sets:fold(fun (File, St) ->
+				      P = join_to_path(Path, File),
+				      autodemonitor_path(P, Pid, Ref, St)
+			      end,
+			      St1, Set);
+		error ->
+		    St0
+	    end;
 	error ->
 	    St0
     end.
 
-proper_prefix([H | T1], [H | T2]) ->
-    proper_prefix(T1, T2);
-proper_prefix([], []) -> false;
-proper_prefix([], _) -> true;
-proper_prefix(_, _) -> false.
+%% tracking subentries of automonitored directories, in order to enable
+%% efficient recursive demonitoring
+
+add_autodir_entry(Path, File, Ref, St) ->
+    Map = case dict:find(Path, St#state.autodirs) of
+	      {ok, Map0} ->
+		  Set = case dict:find(Ref, Map0) of
+			    {ok, Entries} -> Entries;
+			    error -> sets:new()
+			end,
+		  dict:store(Ref, sets:add_element(File, Set), Map0);
+	      error ->
+		  dict:store(Ref, sets:add_element(File, sets:new()),
+			     dict:new())
+	  end,
+    St#state{autodirs = dict:store(Path, Map, St#state.autodirs)}.
+
+remove_autodir_entry(Path, File, Ref, St) ->
+    Dirs0 = St#state.autodirs,
+    case dict:find(Path, Dirs0) of
+	{ok, Map0} ->
+	    case dict:find(Ref, Map0) of
+		{ok, Set0} ->
+		    %% purge empty entries to save space
+		    Set = sets:del_element(File, Set0),
+		    Map = case sets:size(Set) > 0 of
+			      true -> dict:store(Ref, Set, Map0);
+			      false -> dict:erase(Ref, Map0)
+			  end,
+		    Dirs = case dict:size(Map) > 0 of
+			       true -> dict:store(Path, Map, Dirs0);
+			       false -> dict:erase(Path, Dirs0)
+			   end,
+		    St#state{autodirs = Dirs};
+		error -> St
+	    end;
+	error ->
+	    St
+    end.
 
 %% client monitoring (once a client, always a client - until death)
 
@@ -703,9 +745,11 @@ refresh_entry(Path0, Entry, Type) ->
 		    Entry#entry{info = enotdir, files = []}
 	    end;
 	_ ->
-	    %% if we're not monitoring this path as a directory, we
-	    %% don't care what it is exactly, but just track its status
-	    Entry#entry{info = Info}
+	    %% If we're not monitoring this path as a directory, we
+	    %% don't care what it is exactly, but just track its status.
+	    %% To handle the case of an error on a directory monitor, we
+	    %% make sure to reset the list of entries.
+	    Entry#entry{info = Info, files = []}
     end.
 
 %% We clear some fields of the file_info so that we only trigger on real

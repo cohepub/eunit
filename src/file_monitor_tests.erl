@@ -218,6 +218,8 @@ delete_file_subtest({Path, Ref}) ->
     end.
 
 touch_file_subtest({_, Path, Ref}) ->
+    touch_file_subtest({Path, Ref});
+touch_file_subtest({Path, Ref}) ->
     assert_empty_mailbox(),
     touch_file(Path),
     receive
@@ -473,7 +475,12 @@ automonitor_test_() ->
 		      end,
 		      {with,
 		       [fun create_file_subtest/1,
+			fun touch_file_subtest/1,
+			fun delete_file_subtest/1,
+			fun create_file_subtest/1,
+			fun touch_file_subtest/1,
 			fun auto_change_file_type_subtest/1,
+			fun touch_file_subtest/1,
 			fun delete_file_subtest/1
 		       ]}
 		     }
