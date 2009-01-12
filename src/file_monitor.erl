@@ -40,16 +40,18 @@
 %% set up, and `Event' is one of the following:
 %% <ul>
 %%  <li>{@type @{found, Path::binary(), Type, Info::#file_info@{@},
-%%                      Entries::[binary()]@}}</li>
+%%                      Entries::[{added|deleted, Name::binary()@}]@}}</li>
 %%  <li>{@type @{changed, Path::binary(), Type, Info::#file_info@{@},
-%%                      Entries::[binary()]@}}</li>
+%%                      Entries::[{added|deleted, Name::binary()@}]@}}</li>
 %%  <li>{@type @{error, Path::binary(), Type, PosixError::atom()@}}</li>
 %% </ul>
 %% where `Path' is the watched path (as a binary), `Type' is the type of
 %% monitoring being performed (either `file' or `directory'), `Info' is
 %% a `file_info' record as defined in `kernel/include/file.hrl', and
-%% `Entries' is the list of directory entries (base names only) if
-%% `Type' is `directory', otherwise this is always the empty list.
+%% `Entries' is a list of tuples `{added, binary()}' and `{deleted,
+%% binary()}' describing changes to the directory entries if `Type' is
+%% `directory', otherwise this is always the empty list. For a `found'
+%% event, all entries are `{added, Name}'.
 %%
 %% A `found' event is sent when a monitor is initially set up, if the
 %% path can be read. After that, whenever a change in status is
