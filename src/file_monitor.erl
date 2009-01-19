@@ -149,6 +149,7 @@
 
 -define(DEFAULT_INTERVAL, 5000).  % change with option interval
 -define(MIN_INTERVAL, 100).
+-define(TIME_TO_STABLE, 1100).  % (timestamps have second resolution)
 -define(SERVER, ?MODULE).
 -define(MSGTAG, ?SERVER).
 
@@ -165,7 +166,8 @@
 	       }).
 
 -record(entry, {info = undefined,      % #file_info{} or posix atom
-		files = [],            % directory entries (if any)
+		dir = [],              % directory entries (if any)
+		stable = 0,            % integer(), millis until dir stable
 		monitors = sets:new()  % set(monitor())
 	       }).
 
@@ -765,7 +767,7 @@ monitor_path({directory, Path}, Ref, St) ->
 monitor_path(Path, Ref, Type, Dict, St) ->
     Entry = case dict:find(Path, Dict) of
 		{ok, OldEntry} -> poll_file(Path, OldEntry, Type, St);
-		error -> new_entry(Path, Type)
+		error -> new_entry(Path, Type, St)
 	    end,
     event(#entry{}, dummy_entry(Entry, Ref), Type, Path, St),
     NewEntry = Entry#entry{monitors =
@@ -775,8 +777,9 @@ monitor_path(Path, Ref, Type, Dict, St) ->
 dummy_entry(Entry, Ref) ->
     Entry#entry{monitors = sets:add_element(Ref, sets:new())}.
 
-new_entry(Path, Type) ->
-    refresh_entry(Path, #entry{monitors = sets:new()}, Type).
+new_entry(Path, Type, St) ->
+    refresh_entry(Path, #entry{monitors = sets:new()}, Type,
+		  St#state.interval).
 
 %% Deleting a monitor by reference; throws not_owner if the monitor
 %% reference is owned by another Pid. The client_info entry may already
@@ -859,18 +862,20 @@ purge_monitor_path_1(Path, Ref, Dict) ->
 %%
 %% The monitor reference is not included in the event descriptor itself,
 %% but is part of the main message format; see cast/2.
+%%
+%% Note that we never compare directory entry lists here; if there might
+%% have been changes, the timestamps should also be different - see
+%% refresh_entry() below for more details.
 
-event(#entry{info = Info}, #entry{info = Info}, _Type, _Path, _St) ->
-    %% no change in state (note that we never compare directory entry
-    %% lists here; if there have been changes, the timestamps should
-    %% also be different - see list_dir/2 below)
-    ok;
+event(#entry{info = Info, stable = Stable},
+      #entry{info = Info, stable = Stable}, _Type, _Path, _St) ->
+    ok;    % no change in state 
 event(#entry{info = undefined}, #entry{info = NewInfo}=Entry,
       Type, Path, St)
   when not is_atom(NewInfo) ->
     %% file or directory exists, for a fresh monitor
-    Files = diff_lists(Entry#entry.files, []),
-    cast({found, Path, Type, NewInfo, Files}, Entry#entry.monitors, St);
+    Diff = diff_lists(Entry#entry.dir, []),
+    cast({found, Path, Type, NewInfo, Diff}, Entry#entry.monitors, St);
 event(OldEntry, #entry{info = NewInfo}=Entry, Type, Path, St)
   when is_atom(NewInfo) ->
     %% file or directory is not available
@@ -879,8 +884,18 @@ event(OldEntry, #entry{info = NewInfo}=Entry, Type, Path, St)
 event(OldEntry, #entry{info = NewInfo}=Entry, Type, Path, St) ->
     %% a file or directory has changed or become readable again after an error
     type_change_event(OldEntry#entry.info, NewInfo, Type, Path, Entry, St),
-    Files = diff_lists(Entry#entry.files, OldEntry#entry.files),
-    cast({changed, Path, Type, NewInfo, Files}, Entry#entry.monitors, St).
+    Diff = diff_lists(Entry#entry.dir, OldEntry#entry.dir),
+    if Diff =:= [],
+       Entry#entry.stable =/= OldEntry#entry.stable,
+       NewInfo =:= OldEntry#entry.info ->
+	    %% if only the time-to-stable has changed, we must not
+	    %% broadcast an event unless there really was a change in
+	    %% the directory list
+	    ok;
+       true ->
+	    cast({changed, Path, Type, NewInfo, Diff},
+		 Entry#entry.monitors, St)
+    end.
 
 %% sudden changes in file type cause an 'enoent' error report before the
 %% new status, so that clients do not need to detect this themselves
@@ -917,37 +932,86 @@ poll(#state{poll=true}=St) ->
     St#state{poll=false, files = Files, dirs = Dirs}.
 
 poll_file(Path, Entry, Type, St) ->
-    NewEntry = refresh_entry(Path, Entry, Type),
+    NewEntry = refresh_entry(Path, Entry, Type, St#state.interval),
     event(Entry, NewEntry, Type, Path, St),
     NewEntry.
 
-refresh_entry(Path0, Entry, Type) ->
-    Path = binary_to_list(Path0),
-    OldInfo = Entry#entry.info,
-    Info = get_file_info(Path),
+%% We want to minimize the polling cost, so we only list directories
+%% when they have new timestamps, or are still considered "unstable".
+%% This requires some explanation: Recall that timestamps have
+%% whole-second resolution. If we listed a directory during the same
+%% second that it was (or is still being) modified, it is possible that
+%% we did not see all the additions/deletions that were made that second
+%% - and in that case, we might not detect those changes until the
+%% timestamp changes again (maybe never). (This really happens - in
+%% particular in test suites...) But we cannot use the system clock for
+%% comparisons, because the file system might be on another clock (or
+%% another time zone setting), and read-access timestamps are also not
+%% reliable (not consistently updated on all platforms and not at all on
+%% some file systems). Therefore we do our own internal approximation of
+%% passed time (#state.time), based on the refresh cycle.
+%% Furthermore, we should make sure that the timestamps we use are
+%% always from after the directory was last listed, so that we never
+%% report an added entry that was actually created later than the
+%% directory timestamp.
+
+refresh_entry(Path, Entry, Type, Delta) when is_binary(Path) ->
+    refresh_entry_0(binary_to_list(Path), Entry, Type, Delta,
+		    Entry#entry.info).
+
+refresh_entry_0(Path, Entry, Type, Delta, OldInfo) ->
+    refresh_entry_1(Path, Entry, Type, Delta, OldInfo, false).
+
+refresh_entry_1(Path, Entry, Type, Delta, OldInfo, Break) ->
+    NewInfo = get_file_info(Path),
     case Type of
-	directory when not is_atom(Info) ->
-	    case Info#file_info.type of
+	directory when not is_atom(NewInfo) ->
+	    case NewInfo#file_info.type of
 		directory when is_atom(OldInfo)
-		; Info#file_info.mtime =/= OldInfo#file_info.mtime ->
-		    %% we only list directories when they have new
-		    %% timestamps, to keep the polling cost down
-		    Files = list_dir(Path, Info#file_info.mtime),
-		    Entry#entry{info = Info, files = Files};
+		; NewInfo#file_info.mtime =/= OldInfo#file_info.mtime ->
+		    %% The info has changed, so we are forced to refresh
+		    %% the directory listing. We set the time-to-stable,
+		    %% and loop to ensure that the info is always later
+		    %% than the listing. See below for more details.
+		    refresh_entry_2(Path, Entry, Type, Delta, NewInfo,
+				    ?TIME_TO_STABLE);
+		directory when Entry#entry.stable > 0, not Break ->
+		    %% If both the old and new timestamps exist and the
+		    %% modification time has not changed, but the entry
+		    %% is not yet stable (and we didn't loop just now),
+		    %% we need to refresh the directory list again and
+		    %% decrement the time-to-stable. Note that we test
+		    %% *before* we decrement, which ensures that this
+		    %% happens at least once after the initial listing
+		    %% regardless of the value of Delta. (See the
+		    %% discussion about timestamp resolution above.)
+		    refresh_entry_2(Path, Entry, Type, Delta, NewInfo,
+				    max(0, Entry#entry.stable - Delta));
 		directory ->
-		    Entry#entry{info = Info};
+		    Entry#entry{info = NewInfo};
 		_ ->
 		    %% attempting to monitor a non-directory as a
 		    %% directory is reported as an 'enotdir' error
-		    Entry#entry{info = enotdir, files = []}
+		    Entry#entry{info = enotdir, dir = [], stable = 0}
 	    end;
 	_ ->
-	    %% If we're not monitoring this path as a directory, we
-	    %% don't care what it is exactly, but just track its status.
-	    %% To handle the case of an error on a directory monitor, we
-	    %% make sure to reset the list of entries.
-	    Entry#entry{info = Info, files = []}
+	    %% If we're not monitoring this path as a directory, or we
+	    %% got an error, we don't care what kind of object it is,
+	    %% but just track its status. To handle the case of an error
+	    %% on a directory type monitor, we make sure to reset the
+	    %% list of directory entries.
+	    Entry#entry{info = NewInfo, dir = [], stable = 0}
     end.
+
+refresh_entry_2(Path, Entry, Type, Delta, Info, Stable) ->
+    %% refresh directory list, update time-to-stable, and loop to
+    %% re-read the info, but also ensure that we do not trigger the
+    %% stability rule again until the next poll
+    refresh_entry_1(Path,
+		    Entry#entry{info = Info,
+				dir = list_dir(Path),
+				stable = Stable},
+		    Type, Delta, Info, true).
 
 %% We clear some fields of the file_info so that we only trigger on real
 %% changes; see the //kernel/file.erl manual and file.hrl for details.
@@ -964,32 +1028,12 @@ get_file_info(Path) when is_list(Path) ->
 %% Listing the members of a directory; note that it yields the empty
 %% list if it fails - this is not the place for error detection.
 
-list_dir(Path, Mtime) when is_list(Path) ->
+list_dir(Path) when is_list(Path) ->
     Files = case file:list_dir(Path) of
 		{ok, Fs} -> [normalize_path(F) || F <- Fs];
 		{error, _} -> []
 	    end,
-    %% The directory access time should now be the time when we read the
-    %% listing (at least), i.e., the current time.
-    case file:read_file_info(Path) of
-	{ok, #file_info{atime = Atime}} when Mtime =:= Atime ->
-	    %% Recall that the timestamps have whole-second resolution.
-	    %% If we listed the directory during the same second that it
-	    %% was (or is still being) modified, it is possible that we
-	    %% did not see all the additions/deletions that were made
-	    %% that second - and in that case, we will not report those
-	    %% changes until the timestamp changes again (maybe never).
-	    %% To avoid that, we pause and list the directory again.
-	    %% This of course affects the latency of this server in
-	    %% certain situations, so a better solution would be to
-	    %% abort the current refresh for this directory and schedule
-	    %% it for a new asynchronous refresh after a small delay
-	    %% (unless the poll interval is already below 0.5 seconds).
-	    receive after 550 -> list_dir(Path, Mtime) end;
-	_ ->
-	    %% ignore possible errors when reading file_info as well
-	    lists:sort(Files)
-    end.
+    lists:sort(Files).
 
 %% both lists must be sorted for this diff to work
 
