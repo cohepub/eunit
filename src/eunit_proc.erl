@@ -37,7 +37,7 @@
 %% wait_for_task/2 for details about the need for the reference.
 %%
 %% The `Super' process receives a stream of status messages; see
-%% status_message/3 for details.
+%% message_super/3 for details.
 
 start(Tests, Order, Super, Reference)
   when is_pid(Super), is_reference(Reference) ->
@@ -87,7 +87,7 @@ start(Tests, Order, Super, Reference)
 %% with one exception: a 'begin' message will always arrive before its
 %% corresponding 'end' message.
 
-status_message(Id, Info, St) ->
+message_super(Id, Info, St) ->
     St#procstate.super ! {status, Id, Info}.
 
 
@@ -161,7 +161,7 @@ start_task(Type, Fun, St0) ->
 		    %% send messages as if the insulator process was
 		    %% started, but terminated on its own accord
 		    Msg = {startup, Reason},
-		    status_message(St#procstate.id, {cancel, Msg}, St),
+		    message_super(St#procstate.id, {cancel, Msg}, St),
 		    self() ! {done, Reference, Pid}
 	    end,
 	    erlang:demonitor(Monitor, [flush]),
@@ -221,23 +221,23 @@ insulator_process(Type, Fun, St0) ->
 
 insulator_wait(Child, Parent, Buf, St) ->
     receive
-	{io_request, From, ReplyAs, Req} when is_pid(From) ->
-	    Buf1 = io_request(From, ReplyAs, Req, hd(Buf)),
-	    insulator_wait(Child, Parent, [Buf1 | tl(Buf)], St);
-	{progress, Child, Id, 'begin', Class} ->
-	    status_message(Id, {progress, 'begin', Class}, St),
+	{child, Child, Id, {progress, {'begin', Class}}} ->
+	    message_super(Id, {progress, 'begin', Class}, St),
 	    insulator_wait(Child, Parent, [[] | Buf], St);
-	{progress, Child, Id, 'end', {Status, Time}} ->
+	{child, Child, Id, {progress, {'end', {Status, Time}}}} ->
 	    Msg = {Status, Time, list_to_binary(lists:reverse(hd(Buf)))},
-	    status_message(Id, {progress, 'end', Msg}, St),
+	    message_super(Id, {progress, 'end', Msg}, St),
 	    insulator_wait(Child, Parent, tl(Buf), St);
-	{cancel, Child, Id, Reason} ->
-	    status_message(Id, {cancel, Reason}, St),
+	{child, Child, Id, {cancel, Reason}} ->
+	    message_super(Id, {cancel, Reason}, St),
 	    insulator_wait(Child, Parent, Buf, St);
-	{abort, Child, Id, Cause} ->
+	{child, Child, Id, {abort, Cause}} ->
 	    exit_messages(Id, {abort, Cause}, St),
 	    %% no need to wait for the {'EXIT',Child,_} message
 	    terminate_insulator(St);
+	{io_request, From, ReplyAs, Req} when is_pid(From) ->
+	    Buf1 = io_request(From, ReplyAs, Req, hd(Buf)),
+	    insulator_wait(Child, Parent, [Buf1 | tl(Buf)], St);
 	{timeout, Child, Id} ->
 	    exit_messages(Id, timeout, St),
 	    kill_task(Child, St);
@@ -269,24 +269,17 @@ terminate_insulator(St) ->
 %% the Id of the insulator itself, if they are different
 exit_messages(Id, Cause, St) ->
     %% the message for the most specific Id is always sent first
-    status_message(Id, {cancel, Cause}, St),
+    message_super(Id, {cancel, Cause}, St),
     case St#procstate.id of
 	Id -> ok;
-	Id1 -> status_message(Id1, {cancel, {blame, Id}}, St)
+	Id1 -> message_super(Id1, {cancel, {blame, Id}}, St)
     end.
 
 %% Child processes send all messages via the insulator to ensure proper
 %% sequencing with timeouts and exit signals.
 
-abort_message(Cause, St) ->
-    St#procstate.insulator ! {abort, self(), St#procstate.id, Cause}.
-
-cancel_message(Msg, St) ->
-    St#procstate.insulator ! {cancel, self(), St#procstate.id, Msg}.
-
-progress_message(Type, Data, St) ->
-    St#procstate.insulator ! {progress, self(), St#procstate.id,
-			      Type, Data}.
+message_insulator(Type, Data, St) ->
+    St#procstate.insulator ! {child, self(), St#procstate.id, {Type, Data}}.
 
 %% Timeout handling
 
@@ -325,7 +318,7 @@ with_timeout(Time, F, St) when is_integer(Time) ->
     end.
 
 %% The normal behaviour of a child process is not to trap exit
-%% signals.The testing framework is not dependent on this, however, so
+%% signals. The testing framework is not dependent on this, however, so
 %% the test code is allowed to enable signal trapping as it pleases.
 %% Note that I/O is redirected to the insulator process.
 
@@ -336,11 +329,12 @@ child_process(Fun, St) ->
     try Fun() of
 	_ -> ok
     catch
-	%% the only "normal" way for a child process to bail out is to
-	%% throw an {eunit_abort, Reason} exception; any other exception
-	%% will be reported as an unexpected termination of the test
+	%% the only "normal" way for a child process to bail out (e.g,
+	%% when not being able to parse the test descriptor) is to throw
+	%% an {eunit_abort, Reason} exception; any other exception will
+	%% be reported as an unexpected termination of the test
 	{eunit_abort, Cause} ->
-	    abort_message(Cause, St),
+	    message_insulator(abort, Cause, St),
 	    exit(aborted)
     end.
 
@@ -356,17 +350,18 @@ child_test_() ->
 abort_task(Cause) ->
     throw({eunit_abort, Cause}).
 
-%% Typically, the process that executes this code is trapping signals,
-%% but it might not be - it is outside of our control, since test code
-%% could turn off trapping. That is why the insulator process of a task
-%% must be guaranteed to always send a reply before it terminates.
+%% Typically, the process that executes this code is not trapping
+%% signals, but it might be - it is outside of our control, since test
+%% code can enable or disable trapping at will. That we cannot rely on
+%% process links here, is why the insulator process of a task must be
+%% guaranteed to always send a reply before it terminates.
 %%
 %% The unique reference guarantees that we don't extract any message
 %% from the mailbox unless it belongs to the test framework (and not to
 %% the running tests) - it is not possible to use selective receive to
-%% match only messages tagged with some pid in a dynamically varying set
-%% of pids. When the wait-loop terminates, no such message should remain
-%% in the mailbox.
+%% match only messages that are tagged with some pid out of a
+%% dynamically varying set of pids. When the wait-loop terminates, no
+%% such message should remain in the mailbox.
 
 wait_for_task(Pid, St) ->
     wait_for_tasks(sets:from_list([Pid]), St).
@@ -450,10 +445,10 @@ handle_item(T, St) ->
     end.
 
 handle_test(T, St) ->
-    progress_message('begin', test, St),
+    message_insulator(progress, {'begin', test}, St),
     {Status, Time} = with_timeout(T#test.timeout, ?DEFAULT_TEST_TIMEOUT,
 				  fun () -> run_test(T) end, St),
-    progress_message('end', {Status, Time}, St),
+    message_insulator(progress, {'end', {Status, Time}}, St),
     ok.
 
 %% @spec (#test{}) -> ok | {error, eunit_lib:exception()}
@@ -495,14 +490,14 @@ run_group(T, St) ->
     %% note that the setup/cleanup is outside the group timeout; if the
     %% setup fails, we do not start any timers
     Timeout = T#group.timeout,
-    progress_message('begin', group, St),
+    message_insulator(progress, {'begin', group}, St),
     F = fun (T) -> enter_group(T, Timeout, St) end,
     try with_context(T, F) of
 	{Status, Time} ->
-	    progress_message('end', {Status, Time}, St)
+	    message_insulator(progress, {'end', {Status, Time}}, St)
     catch
 	throw:Cause ->
-	    cancel_message({abort, Cause}, St)
+	    message_insulator(cancel, {abort, Cause}, St)
     end,
     ok.
 
