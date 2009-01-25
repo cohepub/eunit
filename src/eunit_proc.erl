@@ -61,12 +61,14 @@ start(Tests, Order, Super, Reference)
 %%       indicates that the item has been entered, and what type it is
 %%
 %%   {progress, 'end', {Status, Time::integer(), Output::binary()}}
-%%       Status = 'ok' | {error, Exception} | {skipped, Cause}
+%%       Status = 'ok' | {error, Exception} | {skipped, Cause} | integer()
 %%
 %%       where Time is measured in milliseconds and Output is the data
 %%       written to the standard output stream during the test; if
 %%       Status is {skipped, Cause}, then Cause is a term thrown from
-%%       eunit_test:run_testfun/1
+%%       eunit_test:run_testfun/1. For a group item, the Status field is
+%%       the number of immediate subitems of the group; this helps the
+%%       collation of results.
 %%
 %%   {cancel, Descriptor}
 %%       where Descriptor can be:
@@ -411,7 +413,7 @@ tests_inorder(I, N, St) ->
 	    handle_item(T, set_id(I1, St)),
 	    tests_inorder(I1, N+1, St);
 	none ->
-	    N
+	    N    % the return status of a group is the subtest count
     end.
 
 tests_inparallel(I, K0, St) ->
@@ -428,7 +430,7 @@ tests_inparallel(I, N, St, K, K0, Children) ->
 			     sets:add_element(Child, Children));
 	none ->
 	    wait_for_tasks(Children, St),
-	    N
+	    N    % the return status of a group is the subtest count
     end.
 
 spawn_item(T, St0) ->

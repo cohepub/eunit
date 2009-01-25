@@ -128,7 +128,8 @@ wait_1(Id, Type, ParentId, N0, St) ->
 	    %%?debugVal({Type, ParentId, Id}),
 	    {{ok, Msg}, St};
 	{status,ParentId,{progress,'end',{N0,_,_}}}=Msg ->
-	    %%?debugVal({end_group, ParentId, Id}),
+	    %% the final status of a group is the count of its subitems
+	    %%?debugVal({end_group, ParentId, Id, N0}),
 	    {none, remember(ParentId, Msg, St)};
 	{status, SomeId, {cancel, _Cause}}=Msg ->
 	    %%?debugVal({got_cancel, SomeId, ParentId, Id}),
