@@ -232,6 +232,8 @@ insulator_wait(Child, Parent, Buf, St) ->
 	    message_super(Id, {cancel, Reason}, St),
 	    insulator_wait(Child, Parent, Buf, St);
 	{child, Child, Id, {abort, Cause}} ->
+	    %% this happens when the child code threw an internal
+	    %% eunit_abort; the child process has already exited
 	    exit_messages(Id, {abort, Cause}, St),
 	    %% no need to wait for the {'EXIT',Child,_} message
 	    terminate_insulator(St);
@@ -321,6 +323,12 @@ with_timeout(Time, F, St) when is_integer(Time) ->
 %% signals. The testing framework is not dependent on this, however, so
 %% the test code is allowed to enable signal trapping as it pleases.
 %% Note that I/O is redirected to the insulator process.
+
+%% The fun executed by the child process is passed from start_task, and
+%% runs either handle_item or run_group, and run_group catches all its
+%% throws, so any eunit_abort here can only be from handle_item, i.e.
+%% from handle_test or handle_group, and handle_test never throws, so it
+%% seems it can only come from run_group - which catches all throws...
 
 %% @spec (() -> term(), #procstate{}) -> ok
 
@@ -428,6 +436,9 @@ tests_inparallel(I, N, St, K, K0, Children) ->
 	    N    % the return status of a group is the subtest count
     end.
 
+%% this starts a new separate task for an inparallel-item (which might
+%% be a group and in that case might cause yet another spawn in the
+%% handle_group() function, but it might also be just a single test)
 spawn_item(T, St0) ->
     Fun = fun (St) ->
 		  fun () -> handle_item(T, St) end
@@ -486,6 +497,7 @@ spawn_group(Type, T, St0) ->
 	  end,
     start_task(Type, Fun, St0).
 
+%% note that this catches all throws
 run_group(T, St) ->
     %% note that the setup/cleanup is outside the group timeout; if the
     %% setup fails, we do not start any timers
@@ -497,6 +509,8 @@ run_group(T, St) ->
 	    message_insulator(progress, {'end', {Status, Time}}, St)
     catch
 	throw:Cause ->
+	    %% the throw can come from eunit_data:enter_context/4 or
+	    %% from eunit_data:iter_next/2
 	    message_insulator(cancel, {abort, Cause}, St)
     end,
     ok.
