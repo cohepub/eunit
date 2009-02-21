@@ -34,7 +34,9 @@
 		fail = 0,
 		abort = 0,
 		skip = 0,
-		indent = 0}).
+		indent = 0,
+		prefix       % prefix of cancelled tests
+	       }).
 
 start(List) ->
     start(List, []).
@@ -50,7 +52,7 @@ init(Id, List, St0) ->
 	    if St0#state.verbose -> print_header();
 	       true -> ok
 	    end,
-	    St = group_begin(Id, "", List, St0),
+	    St = group_begin(Id, "", List, reset_prefix(St0)),
 	    receive
 		{stop, Reference, ReplyTo} ->
 		    Result = if St#state.fail =:= 0,
@@ -95,9 +97,25 @@ print_bar() ->
     io:fwrite("============================"
 	      "===========================\n").    
 
+reset_prefix(St) ->
+    St#state{prefix = [-1]}.  % never matches real test id:s
+
 wait(Id, St) ->
-    receive
-	{status, Id, Data} -> {Data, St}
+    %%?debugVal({waiting_for, Id}),
+    case lists:prefix(St#state.prefix, Id) of
+	true ->
+	    %% cancelled due to parent
+	    %%?debugVal({cancelled_by_prefix, Id}),
+	    {{cancel, undefined}, St};
+	false ->
+	    receive
+		{status, Id1, {cancel, Reason}} ->
+		    %%?debugVal({got_cancel, Id1, Reason}),
+		    {{cancel, Reason}, St#state{prefix=Id1}};
+		{status, Id, Data} ->
+		    %%?debugVal({got_status, Id, Data}),
+		    {Data, reset_prefix(St)}
+	    end
     end.
 
 entry({item, Id, Desc, Loc}, St) ->

@@ -503,7 +503,7 @@ run_group(T, St) ->
     %% setup fails, we do not start any timers
     Timeout = T#group.timeout,
     message_insulator(progress, {'begin', group}, St),
-    F = fun (T) -> enter_group(T, Timeout, St) end,
+    F = fun (G) -> enter_group(G, Timeout, St) end,
     try with_context(T, F) of
 	{Status, Time} ->
 	    message_insulator(progress, {'end', {Status, Time}}, St)

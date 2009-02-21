@@ -63,78 +63,99 @@ serializer(Pids) ->
     St = #state{listeners = sets:from_list(Pids),
 		cancelled = eunit_lib:trie_new(),
 		messages = dict:new()},
-    item([], none, none, St),
+    item([], undefined, 0, St),
     exit(normal).
 
-item(Id, ParentId, N0, St0) ->
-    case wait(Id, 'begin', ParentId, N0, St0) of
-	{none, St1} ->
+%% collect beginning and end of an expected item; return {Done, NewSt}
+%% where Done is true if there are no more items of this group
+item(Id, ParentId, GroupMinSize, St0) ->
+    case wait(Id, 'begin', ParentId, GroupMinSize, St0) of
+	{done, St1} ->
 	    {true, St1};
-	{{cancel, Done, undefined}, St1} ->
-	    {Done, cast({status, Id, {cancel, undefined}}, St1)};
-	{{cancel, Done, Msg}, St1} ->
-	    {Done, cast(Msg, St1)};
-	{{ok, Msg}, St1} ->
+	{cancel, prefix, _Msg, St1} ->
+	    %% if a parent caused the cancel, signal done with group and
+	    %% cast no cancel event (since the item might not exist)
+	    {true, St1};
+	{cancel, exact, Msg, St1} ->
+	    cast_cancel(Id, Msg, St1),
+	    {false, St1};
+	{ok, Msg, St1} ->
 	    %%?debugVal({got_begin, Id, Msg}),
 	    cast(Msg, St1),
 	    St2 = case Msg of
 		      {status, _, {progress, 'begin', group}} ->
 			  items(Id, 0, St1);
-		      _ -> St1
+		      _ ->
+			  St1
 		  end,
-	    case wait(Id, 'end', ParentId, N0, St2) of
-		{{cancel, Done, undefined}, St3} ->
-		    {Done, cast({status, Id, {cancel, undefined}}, St3)};
-		{{cancel, Done, Msg1}, St3} ->
-		    {Done, cast(Msg1, St3)};
-		{{ok, Msg1}, St3} ->
+	    case wait(Id, 'end', ParentId, GroupMinSize, St2) of
+		{cancel, Why, Msg1, St3} ->
+		    %% we know the item exists, so always cast a cancel
+		    %% event, and signal done with the group if a parent
+		    %% caused the cancel
+		    cast_cancel(Id, Msg1, St3),
+		    {(Why =:= prefix), St3};
+		{ok, Msg1, St3} ->
 		    %%?debugVal({got_end, Id, Msg1}),
-		    {false, cast(Msg1, St3)}
+		    cast(Msg1, St3),
+		    {false, St3}
 	    end
     end.
 
-items(ParentId, N0, St) ->
-    N = N0 + 1,
-    case item(ParentId ++ [N], ParentId, N0, St) of
+%% collect group items in order until group is done
+items(ParentId, GroupMinSize, St) ->
+    N = GroupMinSize + 1,
+    case item(ParentId ++ [N], ParentId, GroupMinSize, St) of
 	{false, St1} ->
 	    items(ParentId, N, St1);
 	{true, St1} ->
 	    St1
     end.
 
-cast(M, St) ->
-    sets:fold(fun (L, M) -> L ! M end, M, St#state.listeners),
-    St.
+cast_cancel(Id, undefined, St) ->
+    %% reasonable message for implicitly cancelled events
+    cast({status, Id, {cancel, undefined}}, St);
+cast_cancel(_Id, Msg, St) ->
+    cast(Msg, St).
 
-wait(Id, Type, ParentId, N0, St) ->
+cast(Msg, St) ->
+    sets:fold(fun (L, M) -> L ! M end, Msg, St#state.listeners),
+    ok.
+
+%% wait for a particular begin or end event, that might have arrived or
+%% been cancelled already, or might become cancelled later, or might not
+%% even exist (for the last+1 element of a group)
+wait(Id, Type, ParentId, GroupMinSize, St) ->
     %%?debugVal({wait, Id, Type}),
     case check_cancelled(Id, St) of
 	no ->
 	    case recall(Id, St) of
 		undefined ->
-		    wait_1(Id, Type, ParentId, N0, St);
+		    wait_1(Id, Type, ParentId, GroupMinSize, St);
 		Msg ->
-		    {{ok, Msg}, forget(Id, St)}
+		    {ok, Msg, forget(Id, St)}
 	    end;
 	Why ->
 	    %%?debugVal({cancelled, Why, Id, ParentId}),
-	    Done = (Why =:= prefix),
-	    {{cancel, Done, recall(Id, St)}, forget(Id, St)}
+	    {cancel, Why, recall(Id, St), forget(Id, St)}
     end.
 
-wait_1(Id, Type, ParentId, N0, St) ->
+%% the event has not yet arrived or been cancelled - wait for more info
+wait_1(Id, Type, ParentId, GroupMinSize, St) ->
     receive
 	{status, Id, {progress, Type, _}}=Msg ->
 	    %%?debugVal({Type, ParentId, Id}),
-	    {{ok, Msg}, St};
-	{status,ParentId,{progress,'end',{N0,_,_}}}=Msg ->
-	    %% the final status of a group is the count of its subitems
-	    %%?debugVal({end_group, ParentId, Id, N0}),
-	    {none, remember(ParentId, Msg, St)};
+	    {ok, Msg, St};
+	{status,ParentId,{progress,'end',{GroupMinSize,_,_}}}=Msg ->
+	    %% the parent group ended (the final status of a group is
+	    %% the count of its subitems), and we have seen all of its
+	    %% subtests, so the currently expected event does not exist
+	    %%?debugVal({end_group, ParentId, Id, GroupMinSize}),
+	    {done, remember(ParentId, Msg, St)};
 	{status, SomeId, {cancel, _Cause}}=Msg ->
-	    %%?debugVal({got_cancel, SomeId, ParentId, Id}),
+	    %%?debugVal({got_cancel, SomeId, _Cause}),
 	    St1 = set_cancelled(SomeId, Msg, St),
-	    wait(Id, Type, ParentId, N0, St1)
+	    wait(Id, Type, ParentId, GroupMinSize, St1)
     end.
 
 set_cancelled(Id, Msg, St0) ->
@@ -142,6 +163,7 @@ set_cancelled(Id, Msg, St0) ->
     St#state{cancelled = eunit_lib:trie_store(Id, St0#state.cancelled)}.
 
 check_cancelled(Id, St) ->
+    %% returns 'no', 'exact', or 'prefix'
     eunit_lib:trie_match(Id, St#state.cancelled).
 
 remember(Id, Msg, St) ->
